@@ -194,6 +194,13 @@ resource "kubernetes_deployment" "pgao" {
     }
   }
 
+  # Ensure PostgreSQL clusters are deployed first
+  depends_on = [
+    module.postgres_cluster_prod_1,
+    module.postgres_cluster_prod_2,
+    module.postgres_cluster_dev_1
+  ]
+
   spec {
     replicas = 2
 
@@ -258,13 +265,25 @@ resource "kubernetes_deployment" "pgao" {
             period_seconds        = 10
           }
 
+          startup_probe {
+            http_get {
+              path = "/health"
+              port = 8080
+            }
+            initial_delay_seconds = 10
+            period_seconds        = 5
+            failure_threshold     = 30  # Allow up to 150 seconds (30 * 5s) for startup
+          }
+
           readiness_probe {
             http_get {
               path = "/ready"
               port = 8080
             }
-            initial_delay_seconds = 10
-            period_seconds        = 5
+            initial_delay_seconds = 30
+            period_seconds        = 10
+            timeout_seconds       = 5
+            failure_threshold     = 3
           }
 
           resources {
