@@ -1,6 +1,7 @@
 # PGAO - PostgreSQL Analytics Observer
 
 [![Go Version](https://img.shields.io/badge/Go-1.21-blue)](https://golang.org)
+[![Go Report Card](https://goreportcard.com/badge/github.com/zvdy/pgao)](https://goreportcard.com/report/github.com/zvdy/pgao)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_go](https://github.com/pganalyze/pg_query_go), multi-cluster support, REST API.
