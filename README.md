@@ -31,6 +31,31 @@ curl http://localhost:8080/api/v1/clusters | jq
 - REST API with health checks
 - Kubernetes native with Terraform IaC
 
+## What Data We Expose
+
+**Per-Cluster Metrics** (`/api/v1/clusters/{id}/metrics`):
+- **Connections**: Active vs Total (e.g., 10/100)
+- **Performance**: Transactions/sec, Cache hit ratio (%)
+- **I/O**: Disk read/write in KB
+- **Health**: Lock waits, Deadlocks, Table bloat (%)
+- **Replication**: Lag in milliseconds (for replicas)
+
+**Cluster Configuration** (`/api/v1/clusters/{id}`):
+- PostgreSQL version & settings (shared_buffers, max_connections, work_mem)
+- Installed extensions (pg_stat_statements, pgcrypto, etc.)
+- Available databases
+- Replication topology (primary/replica status)
+
+**Health Status** (`/api/v1/clusters/{id}/health`):
+- Overall score (0-100)
+- Active alerts (warnings/critical)
+- Detected issues (low cache hit, high connections, bloat)
+
+**Query Analysis** (`POST /api/v1/analyze`):
+- Normalized SQL
+- Parse tree structure
+- Query fingerprint (ID)
+
 <details>
 <summary><b>API Endpoints</b></summary>
 
@@ -92,6 +117,11 @@ cd terraform
 terraform init
 terraform apply -var='kube_context=kind-pgao-test' \
                 -var='postgres_password=your-password'
+
+# Load Testing (optional)
+export DB_PASSWORD="your-password"  # Set password for scripts
+./scripts/pgbench_load_test.sh      # Bash-based pgbench test
+python3 scripts/advanced_load_test.py  # Python-based advanced test
 ```
 </details>
 
