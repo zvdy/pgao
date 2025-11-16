@@ -1,6 +1,6 @@
 terraform {
   required_version = ">= 1.0"
-  
+
   required_providers {
     kubernetes = {
       source  = "hashicorp/kubernetes"
@@ -31,9 +31,9 @@ resource "kubernetes_namespace" "postgres" {
   metadata {
     name = var.postgres_namespace
     labels = {
-      name        = var.postgres_namespace
-      managed-by  = "terraform"
-      purpose     = "postgres-clusters"
+      name       = var.postgres_namespace
+      managed-by = "terraform"
+      purpose    = "postgres-clusters"
     }
   }
 }
@@ -60,7 +60,7 @@ module "postgres_cluster_prod_1" {
   storage_size      = "10Gi"
   postgres_version  = "15"
   postgres_password = var.postgres_password
-  
+
   resources = {
     requests = {
       cpu    = "500m"
@@ -88,7 +88,7 @@ module "postgres_cluster_prod_2" {
   storage_size      = "10Gi"
   postgres_version  = "15"
   postgres_password = var.postgres_password
-  
+
   resources = {
     requests = {
       cpu    = "500m"
@@ -116,7 +116,7 @@ module "postgres_cluster_dev_1" {
   storage_size      = "5Gi"
   postgres_version  = "14"
   postgres_password = var.postgres_password
-  
+
   resources = {
     requests = {
       cpu    = "250m"
@@ -220,10 +220,10 @@ resource "kubernetes_deployment" "pgao" {
 
       spec {
         container {
-          name  = "pgao"
-          image = var.pgao_image
+          name              = "pgao"
+          image             = var.pgao_image
           image_pull_policy = "Never"
-          
+
           port {
             name           = "http"
             container_port = 8080
@@ -272,7 +272,7 @@ resource "kubernetes_deployment" "pgao" {
             }
             initial_delay_seconds = 10
             period_seconds        = 5
-            failure_threshold     = 30  # Allow up to 150 seconds (30 * 5s) for startup
+            failure_threshold     = 30 # Allow up to 150 seconds (30 * 5s) for startup
           }
 
           readiness_probe {

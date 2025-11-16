@@ -198,7 +198,7 @@ resource "kubernetes_stateful_set" "postgres" {
 
       spec {
         access_modes = ["ReadWriteOnce"]
-        
+
         resources {
           requests = {
             storage = var.storage_size
