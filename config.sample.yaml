@@ -1,0 +1,66 @@
+# PostgreSQL Analytics Observer Configuration
+# Copy this file to config.yaml and customize for your environment
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  read_timeout: 15s
+  write_timeout: 15s
+  idle_timeout: 60s
+
+# Database clusters to monitor
+clusters:
+  - id: "prod-cluster-1"
+    name: "Production Cluster 1"
+    host: "postgres-prod-1.example.com"
+    port: 5432
+    user: "pgao_monitor"
+    password: "${DATABASE_PASSWORD}"
+    database: "postgres"
+    ssl_mode: "require"
+    max_connections: 25
+    min_connections: 5
+    conn_max_lifetime: 1h
+    conn_max_idle_time: 30m
+    region: "us-east-1"
+    environment: "production"
+    tags:
+      team: "platform"
+      cost_center: "engineering"
+
+  - id: "dev-cluster-1"
+    name: "Development Cluster 1"
+    host: "postgres-dev-1.example.com"
+    port: 5432
+    user: "pgao_monitor"
+    password: "${DATABASE_PASSWORD}"
+    database: "postgres"
+    ssl_mode: "prefer"
+    max_connections: 10
+    min_connections: 2
+    conn_max_lifetime: 1h
+    conn_max_idle_time: 30m
+    region: "us-east-1"
+    environment: "development"
+    tags:
+      team: "platform"
+
+logging:
+  level: "info"  # debug, info, warn, error, fatal
+  format: "json"  # json or text
+  output: "stdout"  # stdout, stderr, or file path
+
+metrics:
+  collection_interval: 60s
+  retention_days: 30
+  enable_prometheus: true
+  prometheus_port: 9090
+
+aws:
+  region: "us-east-1"
+  # access_key_id and secret_access_key can be provided via environment variables
+  # AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
+  assume_role_arn: ""  # Optional: ARN of role to assume
+  accounts:
+    - "123456789012"
+    - "987654321098"

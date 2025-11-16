@@ -1,0 +1,16 @@
+# Terraform Variables Example
+# Copy this file to terraform.tfvars and customize for your environment
+
+# Kubernetes Configuration
+kubeconfig_path = "~/.kube/config"
+kube_context    = "minikube"  # Change to your context: minikube, kind-pgao, docker-desktop, etc.
+
+# Namespace Configuration
+postgres_namespace = "postgres-clusters"
+pgao_namespace     = "pgao"
+
+# PostgreSQL Configuration
+postgres_password = "changeme123"  # CHANGE THIS to a secure password!
+
+# PGAO Application Configuration
+pgao_image = "pgao:latest"
