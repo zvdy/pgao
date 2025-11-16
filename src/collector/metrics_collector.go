@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/db"
 	"github.com/zvdy/pgao/src/models"
@@ -49,19 +50,19 @@ func (mc *MetricsCollector) collectAllMetrics(ctx context.Context) {
 	clusters := mc.pool.GetAllClusters()
 
 	for _, clusterID := range clusters {
-		if err := mc.CollectClusterMetrics(ctx, clusterID); err != nil {
+		if _, err := mc.CollectClusterMetrics(ctx, clusterID); err != nil {
 			mc.log.Errorf("Failed to collect metrics for cluster %s: %v", clusterID, err)
 		}
 	}
 }
 
-// CollectClusterMetrics collects metrics for a specific cluster
-func (mc *MetricsCollector) CollectClusterMetrics(ctx context.Context, clusterID string) error {
+// CollectClusterMetrics collects metrics for a specific cluster and returns them
+func (mc *MetricsCollector) CollectClusterMetrics(ctx context.Context, clusterID string) (*models.Metrics, error) {
 	metrics := models.NewMetrics(clusterID)
 
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Collect connection metrics
@@ -100,24 +101,22 @@ func (mc *MetricsCollector) CollectClusterMetrics(ctx context.Context, clusterID
 	}
 
 	mc.log.Debugf("Collected metrics for cluster %s", clusterID)
-	return nil
+	return metrics, nil
 }
 
 // collectConnectionMetrics collects connection-related metrics
-func (mc *MetricsCollector) collectConnectionMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectConnectionMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
-			(SELECT COUNT(*) FROM pg_stat_activity) as active,
+			(SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active') as active,
 			(SELECT setting::int FROM pg_settings WHERE name = 'max_connections') as max_conn
 	`
 
 	var active, maxConn int
-	// Note: In real implementation, use pool.QueryRow to scan these values
-	_ = query
 
-	// Placeholder values for demonstration
-	active = 25
-	maxConn = 100
+	if err := pool.QueryRow(ctx, query).Scan(&active, &maxConn); err != nil {
+		return err
+	}
 
 	metrics.ConnectionsActive = active
 	metrics.ConnectionsTotal = maxConn
@@ -126,39 +125,48 @@ func (mc *MetricsCollector) collectConnectionMetrics(ctx context.Context, pool i
 }
 
 // collectCacheMetrics collects cache hit ratio metrics
-func (mc *MetricsCollector) collectCacheMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectCacheMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
-			sum(blks_hit) * 100.0 / NULLIF(sum(blks_hit) + sum(blks_read), 0) as cache_hit_ratio
+			COALESCE(sum(blks_hit) * 100.0 / NULLIF(sum(blks_hit) + sum(blks_read), 0), 0) as cache_hit_ratio
 		FROM pg_stat_database
 		WHERE datname = current_database()
 	`
 
-	_ = query
-	// Placeholder
-	metrics.CacheHitRatio = 98.5
+	var cacheHitRatio float64
+
+	if err := pool.QueryRow(ctx, query).Scan(&cacheHitRatio); err != nil {
+		return err
+	}
+
+	metrics.CacheHitRatio = cacheHitRatio
 
 	return nil
 }
 
 // collectTransactionMetrics collects transaction rate metrics
-func (mc *MetricsCollector) collectTransactionMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectTransactionMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
-			xact_commit + xact_rollback as total_txn
+			COALESCE(xact_commit + xact_rollback, 0) as total_txn
 		FROM pg_stat_database
 		WHERE datname = current_database()
 	`
 
-	_ = query
-	// Placeholder
-	metrics.TransactionsPerSec = 150.5
+	var totalTxn int64
+
+	if err := pool.QueryRow(ctx, query).Scan(&totalTxn); err != nil {
+		return err
+	}
+
+	// Calculate TPS (simplified - real implementation would track delta over time)
+	metrics.TransactionsPerSec = float64(totalTxn) / 60.0 // Rough estimate
 
 	return nil
 }
 
 // collectLockMetrics collects lock-related metrics
-func (mc *MetricsCollector) collectLockMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectLockMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
 			COUNT(*) as lock_waits
@@ -166,9 +174,13 @@ func (mc *MetricsCollector) collectLockMetrics(ctx context.Context, pool interfa
 		WHERE NOT granted
 	`
 
-	_ = query
-	// Placeholder
-	metrics.LockWaits = 5
+	var lockWaits int
+
+	if err := pool.QueryRow(ctx, query).Scan(&lockWaits); err != nil {
+		return err
+	}
+
+	metrics.LockWaits = lockWaits
 
 	deadlocksQuery := `
 		SELECT 
@@ -177,58 +189,79 @@ func (mc *MetricsCollector) collectLockMetrics(ctx context.Context, pool interfa
 		WHERE datname = current_database()
 	`
 
-	_ = deadlocksQuery
-	metrics.DeadlockCount = 0
+	var deadlocks int
+
+	if err := pool.QueryRow(ctx, deadlocksQuery).Scan(&deadlocks); err == nil {
+		metrics.DeadlockCount = deadlocks
+	}
 
 	return nil
 }
 
 // collectReplicationMetrics collects replication lag metrics
-func (mc *MetricsCollector) collectReplicationMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectReplicationMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
+	// Check if this is a replica
 	query := `
 		SELECT 
-			EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) * 1000 as lag_ms
+			CASE 
+				WHEN pg_is_in_recovery() THEN 
+					COALESCE(EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) * 1000, 0)
+				ELSE 0 
+			END as lag_ms
 	`
 
-	_ = query
-	// Placeholder
-	metrics.ReplicationLag = 50
+	var lagMs int64
+
+	if err := pool.QueryRow(ctx, query).Scan(&lagMs); err != nil {
+		return err
+	}
+
+	metrics.ReplicationLag = lagMs
 
 	return nil
 }
 
 // collectBloatMetrics collects table bloat metrics
-func (mc *MetricsCollector) collectBloatMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectBloatMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
 			COALESCE(AVG(
-				(pg_stat_get_live_tuples(c.oid) + pg_stat_get_dead_tuples(c.oid))::float / 
-				NULLIF(pg_stat_get_live_tuples(c.oid), 0) * 100
+				CASE WHEN n_live_tup > 0 
+				THEN (n_dead_tup::float / n_live_tup::float) * 100 
+				ELSE 0 END
 			), 0) as bloat_pct
-		FROM pg_class c
-		WHERE c.relkind = 'r'
+		FROM pg_stat_user_tables
 	`
 
-	_ = query
-	// Placeholder
-	metrics.TableBloat = 5.2
+	var bloatPct float64
+
+	if err := pool.QueryRow(ctx, query).Scan(&bloatPct); err != nil {
+		return err
+	}
+
+	metrics.TableBloat = bloatPct
 
 	return nil
 }
 
 // collectDiskIOMetrics collects disk I/O metrics
-func (mc *MetricsCollector) collectDiskIOMetrics(ctx context.Context, pool interface{}, metrics *models.Metrics) error {
+func (mc *MetricsCollector) collectDiskIOMetrics(ctx context.Context, pool *pgxpool.Pool, metrics *models.Metrics) error {
 	query := `
 		SELECT 
-			sum(blks_read) as blocks_read,
-			sum(blks_hit) as blocks_hit
+			COALESCE(sum(blks_read), 0) as blocks_read,
+			COALESCE(sum(tup_inserted + tup_updated + tup_deleted), 0) as blocks_written
 		FROM pg_stat_database
 	`
 
-	_ = query
-	// Placeholder
-	metrics.DiskIORead = 1024.5
-	metrics.DiskIOWrite = 512.3
+	var blocksRead, blocksWritten int64
+
+	if err := pool.QueryRow(ctx, query).Scan(&blocksRead, &blocksWritten); err != nil {
+		return err
+	}
+
+	// Convert blocks to KB (assuming 8KB blocks)
+	metrics.DiskIORead = float64(blocksRead) * 8.0
+	metrics.DiskIOWrite = float64(blocksWritten) * 8.0
 
 	return nil
 }
@@ -312,9 +345,8 @@ func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID, 
 
 // GetMetricsSnapshot returns current metrics snapshot for a cluster
 func (mc *MetricsCollector) GetMetricsSnapshot(ctx context.Context, clusterID string) (*models.Metrics, error) {
-	metrics := models.NewMetrics(clusterID)
-
-	if err := mc.CollectClusterMetrics(ctx, clusterID); err != nil {
+	metrics, err := mc.CollectClusterMetrics(ctx, clusterID)
+	if err != nil {
 		return nil, fmt.Errorf("failed to collect metrics: %w", err)
 	}
 
