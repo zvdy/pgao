@@ -20,7 +20,7 @@ GOFMT=$(GOCMD) fmt
 LDFLAGS=-ldflags "-w -s"
 
 .PHONY: all build clean test coverage fmt lint deps run docker-build docker-run docker-push \
-	terraform-init terraform-plan terraform-apply terraform-destroy \
+	terraform-init terraform-plan terraform-apply terraform-destroy terraform-fmt terraform-lint \
 	k8s-deploy k8s-delete k8s-status help
 
 # Default target
@@ -132,6 +132,20 @@ terraform-apply:
 terraform-destroy:
 	@echo "Destroying Terraform infrastructure..."
 	cd terraform && terraform destroy
+
+terraform-fmt:
+	@echo "Formatting Terraform files..."
+	terraform fmt -recursive terraform/
+
+terraform-lint:
+	@echo "Linting Terraform files..."
+	cd terraform && terraform validate
+	@if command -v tflint >/dev/null 2>&1; then \
+		echo "Running tflint..."; \
+		cd terraform && tflint; \
+	else \
+		echo "tflint not installed, skipping (install with: curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash)"; \
+	fi
 
 # Kubernetes commands
 k8s-deploy:
