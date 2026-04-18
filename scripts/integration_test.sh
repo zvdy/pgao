@@ -61,6 +61,14 @@ main() {
   [ "$code" = "400" ] || fail "empty body should return 400, got $code"
   pass "analyze rejects empty body"
 
+  echo "--- GET /metrics ---"
+  prom="$(curl -sf "$HOST/metrics")"
+  echo "$prom" | grep -q '^pgao_cluster_up' \
+    || fail "/metrics missing pgao_cluster_up series (issue #5)"
+  echo "$prom" | grep -q '^go_goroutines' \
+    || fail "/metrics missing Go runtime metrics"
+  pass "/metrics exposes pgao_* and go_* series"
+
   echo
   echo "Integration tests passed"
 }

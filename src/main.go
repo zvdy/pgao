@@ -10,12 +10,15 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/analyzer"
 	"github.com/zvdy/pgao/src/api"
 	"github.com/zvdy/pgao/src/collector"
 	"github.com/zvdy/pgao/src/config"
 	"github.com/zvdy/pgao/src/db"
+	pgaometrics "github.com/zvdy/pgao/src/metrics"
 )
 
 func main() {
@@ -93,6 +96,15 @@ func main() {
 
 	log.Info("Started background collectors")
 
+	// Prometheus registry: Go runtime + process collectors + pgao exporter.
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(collectors.NewGoCollector())
+	promReg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	if cfg.Metrics.EnablePrometheus {
+		promReg.MustRegister(pgaometrics.NewExporter(metricsCollector))
+		log.Info("Prometheus exporter registered")
+	}
+
 	// Initialize API handler
 	handler := api.NewHandler(
 		pool,
@@ -101,7 +113,7 @@ func main() {
 		metricsCollector,
 		clusterCollector,
 		log,
-	)
+	).WithPromRegistry(promReg)
 
 	// Setup HTTP router
 	router := mux.NewRouter()

@@ -217,3 +217,19 @@ func TestListClustersReturnsEmptyWhenNoneRegistered(t *testing.T) {
 		t.Errorf("expected empty list, got %+v", got)
 	}
 }
+
+func TestMetricsEndpointServesPromText(t *testing.T) {
+	_, r := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from /metrics, got %d", w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if !strings.Contains(ct, "text/plain") && !strings.Contains(ct, "application/openmetrics-text") {
+		t.Errorf("unexpected content-type: %s", ct)
+	}
+}
