@@ -21,7 +21,11 @@ LDFLAGS=-ldflags "-w -s"
 
 .PHONY: all build clean test coverage fmt lint deps run docker-build docker-run docker-push \
 	terraform-init terraform-plan terraform-apply terraform-destroy terraform-fmt terraform-lint \
-	k8s-deploy k8s-delete k8s-status help
+	k8s-deploy k8s-delete k8s-status kind-up kind-down kind-load integration-test help
+
+# Kind integration-test variables
+KIND_CLUSTER ?= pgao-integration
+KIND_IMAGE_TAG ?= integration
 
 # Default target
 all: clean deps fmt build test
@@ -44,6 +48,10 @@ build-all:
 # Run tests
 test:
 	@echo "Running tests..."
+	$(GOTEST) -race -coverprofile=coverage.out ./...
+
+# Run tests in verbose mode (for local debugging)
+test-verbose:
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
 # Generate test coverage report
@@ -215,6 +223,32 @@ security-scan:
 bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./...
+
+# --- Kind-based integration testing -----------------------------------------
+
+# Create a kind cluster for integration testing.
+kind-up:
+	@echo "Creating kind cluster $(KIND_CLUSTER)..."
+	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind/kind-config.yaml
+	kubectl cluster-info --context kind-$(KIND_CLUSTER)
+
+# Tear down the kind cluster.
+kind-down:
+	@echo "Deleting kind cluster $(KIND_CLUSTER)..."
+	kind delete cluster --name $(KIND_CLUSTER)
+
+# Build the pgao image and push it into the kind cluster.
+kind-load: docker-build
+	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(DOCKER_IMAGE):$(KIND_IMAGE_TAG)
+	kind load docker-image $(DOCKER_IMAGE):$(KIND_IMAGE_TAG) --name $(KIND_CLUSTER)
+
+# Deploy Postgres + pgao into kind and run the HTTP-level integration suite.
+integration-test:
+	kubectl apply -f scripts/kind/postgres.yaml
+	kubectl -n postgres rollout status statefulset/postgres --timeout=120s
+	kubectl apply -f scripts/kind/pgao.yaml
+	kubectl -n pgao rollout status deployment/pgao --timeout=120s
+	PGAO_HOST=http://127.0.0.1:30080 ./scripts/integration_test.sh
 
 # Help command
 help:

@@ -41,8 +41,11 @@ jobs:
             exit 1
           fi
 
-      - name: Run Go linter
-        run: make lint
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.60.3
+          args: --timeout=5m
 
   test-go:
     name: Test Go Code
@@ -69,11 +72,15 @@ jobs:
       - name: Download dependencies
         run: make deps
 
-      - name: Run tests
+      - name: Run tests with race detector + coverage
         run: make test
 
-      - name: Run tests with coverage
-        run: make coverage
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+          retention-days: 7
 
   lint-terraform:
     name: Lint Terraform Code

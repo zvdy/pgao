@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Drive the kind-based integration test.
+#
+# Preconditions: kind, kubectl and docker on PATH; a built pgao:integration image
+# already loaded into the cluster.
+#
+# Runs a set of black-box HTTP assertions against the pgao Service exposed on
+# 127.0.0.1:30080 (see scripts/kind/kind-config.yaml).
+
+set -euo pipefail
+
+HOST="${PGAO_HOST:-http://127.0.0.1:30080}"
+RETRIES="${PGAO_RETRIES:-60}"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+pass() { echo "PASS: $*"; }
+
+wait_for() {
+  local url="$1" expect="$2" desc="$3"
+  for _ in $(seq 1 "$RETRIES"); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)"
+    if [ "$code" = "$expect" ]; then
+      pass "$desc -> $code"
+      return 0
+    fi
+    sleep 2
+  done
+  fail "$desc never returned $expect (last=$code)"
+}
+
+main() {
+  echo "--- /health ---"
+  wait_for "$HOST/health" 200 "health endpoint reachable"
+
+  echo "--- /ready ---"
+  wait_for "$HOST/ready" 200 "ready endpoint reachable"
+
+  echo "--- GET /api/v1/clusters ---"
+  body="$(curl -sf "$HOST/api/v1/clusters")"
+  echo "$body" | grep -q "integration-test" || fail "configured cluster not listed in /api/v1/clusters: $body"
+  pass "cluster listed in response"
+
+  echo "--- GET /api/v1/clusters/integration-test/metrics ---"
+  metrics="$(curl -sf "$HOST/api/v1/clusters/integration-test/metrics")"
+  echo "$metrics" | grep -q '"cluster_id":"integration-test"' \
+    || fail "metrics response missing cluster_id: $metrics"
+  pass "metrics reported for integration-test"
+
+  echo "--- POST /api/v1/analyze (SELECT) ---"
+  analysis="$(curl -sf -H 'Content-Type: application/json' \
+    -d '{"query":"SELECT id, name FROM test_table WHERE id = 1"}' \
+    "$HOST/api/v1/analyze")"
+  echo "$analysis" | grep -q '"query_type":"SELECT"' \
+    || fail "analyze response missing query_type=SELECT: $analysis"
+  pass "analyze returns SELECT for test query"
+
+  echo "--- POST /api/v1/analyze (invalid) ---"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{}' "$HOST/api/v1/analyze")"
+  [ "$code" = "400" ] || fail "empty body should return 400, got $code"
+  pass "analyze rejects empty body"
+
+  echo
+  echo "Integration tests passed"
+}
+
+main "$@"

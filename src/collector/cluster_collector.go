@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -14,6 +15,7 @@ import (
 type ClusterCollector struct {
 	pool     *db.ConnectionPool
 	log      *logrus.Logger
+	mu       sync.RWMutex
 	clusters map[string]*models.Cluster
 	interval time.Duration
 }
@@ -69,12 +71,13 @@ func (cc *ClusterCollector) CollectClusterInfo(ctx context.Context, clusterID st
 
 	_ = pool
 
-	// Create or update cluster information
+	cc.mu.Lock()
 	cluster, exists := cc.clusters[clusterID]
 	if !exists {
 		cluster = models.NewCluster(clusterID, clusterID, "unknown", make(map[string]interface{}))
 		cc.clusters[clusterID] = cluster
 	}
+	cc.mu.Unlock()
 
 	// Check cluster health
 	if err := cc.pool.HealthCheck(clusterID); err != nil {
@@ -258,38 +261,46 @@ func (cc *ClusterCollector) collectExtensions(ctx context.Context, clusterID str
 
 // GetCluster returns cluster information
 func (cc *ClusterCollector) GetCluster(clusterID string) (*models.Cluster, error) {
+	cc.mu.RLock()
+	defer cc.mu.RUnlock()
+
 	cluster, exists := cc.clusters[clusterID]
 	if !exists {
 		return nil, fmt.Errorf("cluster %s not found", clusterID)
 	}
-
 	return cluster, nil
 }
 
 // GetAllClusters returns all cluster information
 func (cc *ClusterCollector) GetAllClusters() []*models.Cluster {
+	cc.mu.RLock()
+	defer cc.mu.RUnlock()
+
 	clusters := make([]*models.Cluster, 0, len(cc.clusters))
 	for _, cluster := range cc.clusters {
 		clusters = append(clusters, cluster)
 	}
-
 	return clusters
 }
 
 // RegisterCluster registers a new cluster for monitoring
 func (cc *ClusterCollector) RegisterCluster(cluster *models.Cluster) {
+	cc.mu.Lock()
 	cc.clusters[cluster.ID] = cluster
+	cc.mu.Unlock()
 	cc.log.Infof("Registered cluster %s for monitoring", cluster.ID)
 }
 
 // UnregisterCluster removes a cluster from monitoring
 func (cc *ClusterCollector) UnregisterCluster(clusterID string) error {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
 	if _, exists := cc.clusters[clusterID]; !exists {
 		return fmt.Errorf("cluster %s not found", clusterID)
 	}
 
 	delete(cc.clusters, clusterID)
 	cc.log.Infof("Unregistered cluster %s from monitoring", clusterID)
-
 	return nil
 }
