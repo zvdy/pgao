@@ -19,7 +19,12 @@ GOFMT=$(GOCMD) fmt
 # Build flags
 LDFLAGS=-ldflags "-w -s"
 
-.PHONY: all build clean test coverage fmt lint deps run docker-build docker-run docker-push \
+# Tooling (pinned — keep in sync with .github/workflows/ci.yml)
+GOLANGCI_LINT_VERSION?=v1.64.8
+TOOLS_BIN?=$(CURDIR)/bin/tools
+GOLANGCI_LINT=$(TOOLS_BIN)/golangci-lint
+
+.PHONY: all build clean test coverage fmt lint lint-ci install-tools deps run docker-build docker-run docker-push \
 	terraform-init terraform-plan terraform-apply terraform-destroy terraform-fmt terraform-lint \
 	k8s-deploy k8s-delete k8s-status kind-up kind-down kind-load integration-test help
 
@@ -65,14 +70,31 @@ fmt:
 	@echo "Formatting code..."
 	$(GOFMT) ./...
 
-# Lint code
-lint:
-	@echo "Linting code..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m; \
+# Install pinned dev tools into $(TOOLS_BIN). Idempotent: only re-installs
+# golangci-lint if the binary is missing or the installed version differs.
+install-tools:
+	@mkdir -p $(TOOLS_BIN)
+	@installed=""; \
+	if [ -x "$(GOLANGCI_LINT)" ]; then \
+		installed=$$($(GOLANGCI_LINT) version --format short 2>/dev/null || true); \
+	fi; \
+	want=$$(echo "$(GOLANGCI_LINT_VERSION)" | sed 's/^v//'); \
+	if [ "$$installed" != "$$want" ]; then \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) into $(TOOLS_BIN)"; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+			| sh -s -- -b $(TOOLS_BIN) $(GOLANGCI_LINT_VERSION); \
 	else \
-		echo "golangci-lint not installed. Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "golangci-lint $(GOLANGCI_LINT_VERSION) already installed at $(GOLANGCI_LINT)"; \
 	fi
+
+# Lint code with the pinned golangci-lint. Matches the CI invocation exactly.
+lint: install-tools
+	@echo "Linting code with $(GOLANGCI_LINT_VERSION)..."
+	$(GOLANGCI_LINT) run --timeout=5m
+
+# Same thing CI runs — kept as a separate target so `make lint-ci` is a
+# one-liner when reproducing CI failures locally.
+lint-ci: lint
 
 # Install/update dependencies
 deps:

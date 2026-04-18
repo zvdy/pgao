@@ -1,7 +1,7 @@
 package analyzer
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -320,9 +320,11 @@ func (qa *QueryAnalyzer) generateSuggestions(analysis *models.QueryAnalysis) {
 	}
 }
 
-// generateCacheKey generates a cache key for the query
+// generateCacheKey generates a cache key for the query. The hash is only used
+// as a map key, so any collision-resistant hash works; SHA-256 keeps gosec
+// happy without meaningfully changing cost.
 func (qa *QueryAnalyzer) generateCacheKey(query string) string {
 	normalized := strings.TrimSpace(strings.ToLower(query))
-	hash := md5.Sum([]byte(normalized))
+	hash := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(hash[:])
 }

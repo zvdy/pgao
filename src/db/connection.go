@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -30,6 +31,19 @@ type ConnectionConfig struct {
 	ConnMaxLifetime time.Duration
 	ConnMaxIdleTime time.Duration
 	SSLMode         string
+}
+
+// clampToInt32 narrows an int pool-size to int32, saturating on overflow so
+// absurd config values can't wrap negative.
+func clampToInt32(v int) int32 {
+	switch {
+	case v > math.MaxInt32:
+		return math.MaxInt32
+	case v < 0:
+		return 0
+	default:
+		return int32(v)
+	}
 }
 
 // NewConnectionPool creates a new connection pool manager
@@ -69,13 +83,13 @@ func (cp *ConnectionPool) AddCluster(clusterID string, config ConnectionConfig) 
 
 	// Configure pool
 	if config.MaxConnections > 0 {
-		poolConfig.MaxConns = int32(config.MaxConnections)
+		poolConfig.MaxConns = clampToInt32(config.MaxConnections)
 	} else {
 		poolConfig.MaxConns = 25 // default
 	}
 
 	if config.MinConnections > 0 {
-		poolConfig.MinConns = int32(config.MinConnections)
+		poolConfig.MinConns = clampToInt32(config.MinConnections)
 	} else {
 		poolConfig.MinConns = 5 // default
 	}

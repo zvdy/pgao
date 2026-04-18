@@ -41,11 +41,10 @@ jobs:
             exit 1
           fi
 
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.60.3
-          args: --timeout=5m
+      - name: Run Go linter
+        run: make lint
+        env:
+          GOLANGCI_LINT_VERSION: v1.64.8
 
   test-go:
     name: Test Go Code
