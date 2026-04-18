@@ -19,9 +19,18 @@ GOFMT=$(GOCMD) fmt
 # Build flags
 LDFLAGS=-ldflags "-w -s"
 
-.PHONY: all build clean test coverage fmt lint deps run docker-build docker-run docker-push \
+# Tooling (pinned — keep in sync with .github/workflows/ci.yml)
+GOLANGCI_LINT_VERSION?=v1.64.8
+TOOLS_BIN?=$(CURDIR)/bin/tools
+GOLANGCI_LINT=$(TOOLS_BIN)/golangci-lint
+
+.PHONY: all build clean test coverage fmt lint lint-ci install-tools deps run docker-build docker-run docker-push \
 	terraform-init terraform-plan terraform-apply terraform-destroy terraform-fmt terraform-lint \
-	k8s-deploy k8s-delete k8s-status help
+	k8s-deploy k8s-delete k8s-status kind-up kind-down kind-load integration-test help
+
+# Kind integration-test variables
+KIND_CLUSTER ?= pgao-integration
+KIND_IMAGE_TAG ?= integration
 
 # Default target
 all: clean deps fmt build test
@@ -44,6 +53,10 @@ build-all:
 # Run tests
 test:
 	@echo "Running tests..."
+	$(GOTEST) -race -coverprofile=coverage.out ./...
+
+# Run tests in verbose mode (for local debugging)
+test-verbose:
 	$(GOTEST) -v -race -coverprofile=coverage.out ./...
 
 # Generate test coverage report
@@ -57,14 +70,31 @@ fmt:
 	@echo "Formatting code..."
 	$(GOFMT) ./...
 
-# Lint code
-lint:
-	@echo "Linting code..."
-	@if command -v golangci-lint >/dev/null 2>&1; then \
-		golangci-lint run --timeout=5m; \
+# Install pinned dev tools into $(TOOLS_BIN). Idempotent: only re-installs
+# golangci-lint if the binary is missing or the installed version differs.
+install-tools:
+	@mkdir -p $(TOOLS_BIN)
+	@installed=""; \
+	if [ -x "$(GOLANGCI_LINT)" ]; then \
+		installed=$$($(GOLANGCI_LINT) version --format short 2>/dev/null || true); \
+	fi; \
+	want=$$(echo "$(GOLANGCI_LINT_VERSION)" | sed 's/^v//'); \
+	if [ "$$installed" != "$$want" ]; then \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) into $(TOOLS_BIN)"; \
+		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+			| sh -s -- -b $(TOOLS_BIN) $(GOLANGCI_LINT_VERSION); \
 	else \
-		echo "golangci-lint not installed. Install with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		echo "golangci-lint $(GOLANGCI_LINT_VERSION) already installed at $(GOLANGCI_LINT)"; \
 	fi
+
+# Lint code with the pinned golangci-lint. Matches the CI invocation exactly.
+lint: install-tools
+	@echo "Linting code with $(GOLANGCI_LINT_VERSION)..."
+	$(GOLANGCI_LINT) run --timeout=5m
+
+# Same thing CI runs — kept as a separate target so `make lint-ci` is a
+# one-liner when reproducing CI failures locally.
+lint-ci: lint
 
 # Install/update dependencies
 deps:
@@ -215,6 +245,32 @@ security-scan:
 bench:
 	@echo "Running benchmarks..."
 	$(GOTEST) -bench=. -benchmem ./...
+
+# --- Kind-based integration testing -----------------------------------------
+
+# Create a kind cluster for integration testing.
+kind-up:
+	@echo "Creating kind cluster $(KIND_CLUSTER)..."
+	kind create cluster --name $(KIND_CLUSTER) --config scripts/kind/kind-config.yaml
+	kubectl cluster-info --context kind-$(KIND_CLUSTER)
+
+# Tear down the kind cluster.
+kind-down:
+	@echo "Deleting kind cluster $(KIND_CLUSTER)..."
+	kind delete cluster --name $(KIND_CLUSTER)
+
+# Build the pgao image and push it into the kind cluster.
+kind-load: docker-build
+	docker tag $(DOCKER_IMAGE):$(DOCKER_TAG) $(DOCKER_IMAGE):$(KIND_IMAGE_TAG)
+	kind load docker-image $(DOCKER_IMAGE):$(KIND_IMAGE_TAG) --name $(KIND_CLUSTER)
+
+# Deploy Postgres + pgao into kind and run the HTTP-level integration suite.
+integration-test:
+	kubectl apply -f scripts/kind/postgres.yaml
+	kubectl -n postgres rollout status statefulset/postgres --timeout=120s
+	kubectl apply -f scripts/kind/pgao.yaml
+	kubectl -n pgao rollout status deployment/pgao --timeout=120s
+	PGAO_HOST=http://127.0.0.1:30080 ./scripts/integration_test.sh
 
 # Help command
 help:

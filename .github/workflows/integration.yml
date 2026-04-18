@@ -1,0 +1,92 @@
+name: Integration (kind)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  kind-integration:
+    name: End-to-end tests on kind
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Build pgao binary
+        run: make build
+
+      - name: Build Docker image
+        run: make docker-build
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: pgao-integration
+          config: scripts/kind/kind-config.yaml
+          wait: 120s
+
+      - name: Load pgao image into kind
+        run: |
+          docker tag pgao:latest pgao:integration
+          kind load docker-image pgao:integration --name pgao-integration
+
+      - name: Deploy Postgres
+        run: |
+          kubectl apply -f scripts/kind/postgres.yaml
+          kubectl -n postgres rollout status statefulset/postgres --timeout=180s
+
+      - name: Deploy pgao
+        run: |
+          kubectl apply -f scripts/kind/pgao.yaml
+          kubectl -n pgao rollout status deployment/pgao --timeout=180s
+
+      - name: Wait for NodePort to respond
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:30080/health >/dev/null; then
+              echo "pgao is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "pgao never became reachable"
+          kubectl -n pgao describe pod -l app=pgao
+          kubectl -n pgao logs -l app=pgao --tail=200
+          exit 1
+
+      - name: Run HTTP integration assertions
+        env:
+          PGAO_HOST: http://127.0.0.1:30080
+        run: ./scripts/integration_test.sh
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "--- pgao pods ---"
+          kubectl -n pgao get pods -o wide
+          echo "--- pgao logs ---"
+          kubectl -n pgao logs -l app=pgao --tail=500 || true
+          echo "--- postgres pods ---"
+          kubectl -n postgres get pods -o wide
+          echo "--- postgres logs ---"
+          kubectl -n postgres logs -l app=postgres --tail=200 || true

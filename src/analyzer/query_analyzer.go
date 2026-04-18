@@ -1,10 +1,11 @@
 package analyzer
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"sync"
 
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 	"github.com/zvdy/pgao/src/models"
@@ -12,7 +13,7 @@ import (
 
 // QueryAnalyzer is responsible for analyzing SQL queries
 type QueryAnalyzer struct {
-	// Cache for parsed queries
+	mu    sync.RWMutex
 	cache map[string]*models.QueryAnalysis
 }
 
@@ -25,11 +26,12 @@ func NewQueryAnalyzer() *QueryAnalyzer {
 
 // Analyze takes a SQL query as input and returns a comprehensive analysis
 func (qa *QueryAnalyzer) Analyze(query string) (*models.QueryAnalysis, error) {
-	// Create cache key
 	cacheKey := qa.generateCacheKey(query)
 
-	// Check cache
-	if cached, exists := qa.cache[cacheKey]; exists {
+	qa.mu.RLock()
+	cached, exists := qa.cache[cacheKey]
+	qa.mu.RUnlock()
+	if exists {
 		return cached, nil
 	}
 
@@ -66,8 +68,9 @@ func (qa *QueryAnalyzer) Analyze(query string) (*models.QueryAnalysis, error) {
 	// Generate optimization suggestions
 	qa.generateSuggestions(analysis)
 
-	// Cache the result
+	qa.mu.Lock()
 	qa.cache[cacheKey] = analysis
+	qa.mu.Unlock()
 
 	return analysis, nil
 }
@@ -317,9 +320,11 @@ func (qa *QueryAnalyzer) generateSuggestions(analysis *models.QueryAnalysis) {
 	}
 }
 
-// generateCacheKey generates a cache key for the query
+// generateCacheKey generates a cache key for the query. The hash is only used
+// as a map key, so any collision-resistant hash works; SHA-256 keeps gosec
+// happy without meaningfully changing cost.
 func (qa *QueryAnalyzer) generateCacheKey(query string) string {
 	normalized := strings.TrimSpace(strings.ToLower(query))
-	hash := md5.Sum([]byte(normalized))
+	hash := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(hash[:])
 }

@@ -115,7 +115,7 @@ func expandEnvVars(input string) string {
 			// $VAR format
 			varName = match[1:]
 		}
-		
+
 		// Get value from environment
 		if val := os.Getenv(varName); val != "" {
 			return val
