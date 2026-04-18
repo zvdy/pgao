@@ -285,18 +285,19 @@ func (mc *MetricsCollector) collectDiskIOMetrics(ctx context.Context, clusterID 
 	return nil
 }
 
-// CollectQueryMetrics collects query-level metrics
+// CollectQueryMetrics returns the top 100 queries by mean execution time from
+// pg_stat_statements. The extension must be installed; if it isn't, callers
+// will see a `relation "pg_stat_statements" does not exist` error from pgx.
+// Issue #7 will add the precondition check + per-request limit/order knobs.
 func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID, database string) ([]*models.QueryMetrics, error) {
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = pool
-
 	query := `
-		SELECT 
-			queryid,
+		SELECT
+			queryid::text,
 			query,
 			calls,
 			total_exec_time,
@@ -312,54 +313,108 @@ func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID, 
 		LIMIT 100
 	`
 
-	_ = query
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query pg_stat_statements: %w", err)
+	}
+	defer rows.Close()
 
-	// Placeholder - in real implementation, scan query results
-	queryMetrics := make([]*models.QueryMetrics, 0)
-
-	return queryMetrics, nil
+	results := make([]*models.QueryMetrics, 0)
+	for rows.Next() {
+		qm := models.NewQueryMetrics("", "", clusterID, database)
+		if err := rows.Scan(
+			&qm.QueryID,
+			&qm.Query,
+			&qm.CallCount,
+			&qm.ExecutionTime,
+			&qm.MeanExecTime,
+			&qm.StddevExecTime,
+			&qm.RowsReturned,
+			&qm.SharedBlocksHit,
+			&qm.SharedBlocksRead,
+			&qm.TempBlocksRead,
+			&qm.TempBlocksWritten,
+		); err != nil {
+			return nil, fmt.Errorf("scan query row: %w", err)
+		}
+		results = append(results, qm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate query rows: %w", err)
+	}
+	return results, nil
 }
 
-// CollectTableMetrics collects table-level statistics
+// CollectTableMetrics returns the top 100 user tables by total scan activity
+// from pg_stat_user_tables.
 func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID, database string) ([]*models.TableMetrics, error) {
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = pool
-
 	query := `
-		SELECT 
+		SELECT
 			schemaname,
 			relname,
-			seq_scan,
-			seq_tup_read,
-			idx_scan,
-			idx_tup_fetch,
-			n_tup_ins,
-			n_tup_upd,
-			n_tup_del,
-			n_tup_hot_upd,
-			n_live_tup,
-			n_dead_tup,
-			vacuum_count,
-			autovacuum_count,
-			analyze_count,
+			COALESCE(seq_scan, 0),
+			COALESCE(seq_tup_read, 0),
+			COALESCE(idx_scan, 0),
+			COALESCE(idx_tup_fetch, 0),
+			COALESCE(n_tup_ins, 0),
+			COALESCE(n_tup_upd, 0),
+			COALESCE(n_tup_del, 0),
+			COALESCE(n_tup_hot_upd, 0),
+			COALESCE(n_live_tup, 0),
+			COALESCE(n_dead_tup, 0),
+			COALESCE(vacuum_count, 0),
+			COALESCE(autovacuum_count, 0),
+			COALESCE(analyze_count, 0),
 			last_vacuum,
 			last_autovacuum,
 			last_analyze
 		FROM pg_stat_user_tables
-		ORDER BY seq_scan + idx_scan DESC
+		ORDER BY COALESCE(seq_scan, 0) + COALESCE(idx_scan, 0) DESC
 		LIMIT 100
 	`
 
-	_ = query
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query pg_stat_user_tables: %w", err)
+	}
+	defer rows.Close()
 
-	// Placeholder
-	tableMetrics := make([]*models.TableMetrics, 0)
-
-	return tableMetrics, nil
+	results := make([]*models.TableMetrics, 0)
+	for rows.Next() {
+		tm := models.NewTableMetrics(clusterID, database, "", "")
+		if err := rows.Scan(
+			&tm.Schema,
+			&tm.Table,
+			&tm.SeqScan,
+			&tm.SeqTupRead,
+			&tm.IdxScan,
+			&tm.IdxTupFetch,
+			&tm.TupInserted,
+			&tm.TupUpdated,
+			&tm.TupDeleted,
+			&tm.TupHotUpdated,
+			&tm.LiveTuples,
+			&tm.DeadTuples,
+			&tm.VacuumCount,
+			&tm.AutovacuumCount,
+			&tm.AnalyzeCount,
+			&tm.LastVacuum,
+			&tm.LastAutovacuum,
+			&tm.LastAnalyze,
+		); err != nil {
+			return nil, fmt.Errorf("scan table row: %w", err)
+		}
+		results = append(results, tm)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate table rows: %w", err)
+	}
+	return results, nil
 }
 
 // GetMetricsSnapshot returns current metrics snapshot for a cluster

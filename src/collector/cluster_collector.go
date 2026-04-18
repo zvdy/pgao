@@ -64,12 +64,9 @@ func (cc *ClusterCollector) collectAllClusters(ctx context.Context) {
 
 // CollectClusterInfo collects information about a specific cluster
 func (cc *ClusterCollector) CollectClusterInfo(ctx context.Context, clusterID string) error {
-	pool, err := cc.pool.GetPool(clusterID)
-	if err != nil {
+	if _, err := cc.pool.GetPool(clusterID); err != nil {
 		return err
 	}
-
-	_ = pool
 
 	cc.mu.Lock()
 	cluster, exists := cc.clusters[clusterID]
@@ -122,33 +119,30 @@ func (cc *ClusterCollector) CollectClusterInfo(ctx context.Context, clusterID st
 	return nil
 }
 
-// collectVersion retrieves PostgreSQL version
+// collectVersion retrieves the running PostgreSQL version string.
 func (cc *ClusterCollector) collectVersion(ctx context.Context, clusterID string) (string, error) {
 	pool, err := cc.pool.GetPool(clusterID)
 	if err != nil {
 		return "", err
 	}
 
-	_ = pool
-
-	query := "SELECT version()"
-	_ = query
-
-	// Placeholder
-	return "PostgreSQL 15.3", nil
+	var version string
+	if err := pool.QueryRow(ctx, "SELECT version()").Scan(&version); err != nil {
+		return "", fmt.Errorf("query version: %w", err)
+	}
+	return version, nil
 }
 
-// collectSettings retrieves important PostgreSQL settings
+// collectSettings retrieves a curated set of pg_settings entries, formatting
+// each value with its unit when one is present.
 func (cc *ClusterCollector) collectSettings(ctx context.Context, clusterID string) (map[string]string, error) {
 	pool, err := cc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = pool
-
 	query := `
-		SELECT name, setting, unit
+		SELECT name, setting, COALESCE(unit, '')
 		FROM pg_settings
 		WHERE name IN (
 			'max_connections',
@@ -164,27 +158,36 @@ func (cc *ClusterCollector) collectSettings(ctx context.Context, clusterID strin
 		)
 	`
 
-	_ = query
-
-	// Placeholder
-	settings := map[string]string{
-		"max_connections":      "100",
-		"shared_buffers":       "128MB",
-		"effective_cache_size": "4GB",
-		"work_mem":             "4MB",
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query settings: %w", err)
 	}
+	defer rows.Close()
 
+	settings := make(map[string]string)
+	for rows.Next() {
+		var name, setting, unit string
+		if err := rows.Scan(&name, &setting, &unit); err != nil {
+			return nil, fmt.Errorf("scan settings: %w", err)
+		}
+		if unit == "" {
+			settings[name] = setting
+		} else {
+			settings[name] = setting + unit
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate settings: %w", err)
+	}
 	return settings, nil
 }
 
-// collectDatabases retrieves list of databases
+// collectDatabases lists every non-template database on the cluster.
 func (cc *ClusterCollector) collectDatabases(ctx context.Context, clusterID string) ([]string, error) {
 	pool, err := cc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
-
-	_ = pool
 
 	query := `
 		SELECT datname
@@ -193,69 +196,111 @@ func (cc *ClusterCollector) collectDatabases(ctx context.Context, clusterID stri
 		ORDER BY datname
 	`
 
-	_ = query
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query databases: %w", err)
+	}
+	defer rows.Close()
 
-	// Placeholder
-	databases := []string{"postgres", "myapp"}
-
+	databases := make([]string, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan database: %w", err)
+		}
+		databases = append(databases, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate databases: %w", err)
+	}
 	return databases, nil
 }
 
-// collectReplicationStatus retrieves replication status
+// collectReplicationStatus reports whether the node is a primary and lists
+// every connected replica via pg_stat_replication.
 func (cc *ClusterCollector) collectReplicationStatus(ctx context.Context, clusterID string) (map[string]interface{}, error) {
 	pool, err := cc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = pool
+	var inRecovery bool
+	if err := pool.QueryRow(ctx, "SELECT pg_is_in_recovery()").Scan(&inRecovery); err != nil {
+		return nil, fmt.Errorf("query recovery state: %w", err)
+	}
 
+	status := map[string]interface{}{
+		"is_primary": !inRecovery,
+		"replicas":   []map[string]interface{}{},
+	}
+
+	// pg_stat_replication is empty on standbys; the query is still safe.
 	query := `
-		SELECT 
-			application_name,
-			client_addr,
-			state,
-			sync_state,
-			sent_lsn,
-			write_lsn,
-			flush_lsn,
-			replay_lsn,
-			sync_priority,
-			EXTRACT(EPOCH FROM (NOW() - backend_start))::int as uptime_seconds
+		SELECT
+			COALESCE(application_name, ''),
+			COALESCE(client_addr::text, ''),
+			COALESCE(state, ''),
+			COALESCE(sync_state, ''),
+			COALESCE(sent_lsn::text, ''),
+			COALESCE(replay_lsn::text, ''),
+			COALESCE(EXTRACT(EPOCH FROM (NOW() - backend_start))::int, 0)
 		FROM pg_stat_replication
 	`
 
-	_ = query
-
-	// Placeholder
-	replStatus := map[string]interface{}{
-		"is_primary": true,
-		"replicas":   []interface{}{},
+	rows, err := pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query replication: %w", err)
 	}
+	defer rows.Close()
 
-	return replStatus, nil
+	replicas := make([]map[string]interface{}, 0)
+	for rows.Next() {
+		var appName, clientAddr, state, syncState, sentLSN, replayLSN string
+		var uptime int
+		if err := rows.Scan(&appName, &clientAddr, &state, &syncState, &sentLSN, &replayLSN, &uptime); err != nil {
+			return nil, fmt.Errorf("scan replication: %w", err)
+		}
+		replicas = append(replicas, map[string]interface{}{
+			"application_name": appName,
+			"client_addr":      clientAddr,
+			"state":            state,
+			"sync_state":       syncState,
+			"sent_lsn":         sentLSN,
+			"replay_lsn":       replayLSN,
+			"uptime_seconds":   uptime,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate replication: %w", err)
+	}
+	status["replicas"] = replicas
+	return status, nil
 }
 
-// collectExtensions retrieves list of installed extensions
+// collectExtensions returns every installed extension on the cluster.
 func (cc *ClusterCollector) collectExtensions(ctx context.Context, clusterID string) ([]string, error) {
 	pool, err := cc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	_ = pool
+	rows, err := pool.Query(ctx, "SELECT extname FROM pg_extension ORDER BY extname")
+	if err != nil {
+		return nil, fmt.Errorf("query extensions: %w", err)
+	}
+	defer rows.Close()
 
-	query := `
-		SELECT extname
-		FROM pg_extension
-		ORDER BY extname
-	`
-
-	_ = query
-
-	// Placeholder
-	extensions := []string{"pg_stat_statements", "pgcrypto"}
-
+	extensions := make([]string, 0)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan extension: %w", err)
+		}
+		extensions = append(extensions, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate extensions: %w", err)
+	}
 	return extensions, nil
 }
 
