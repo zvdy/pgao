@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +17,15 @@ import (
 	"github.com/zvdy/pgao/src/collector"
 	"github.com/zvdy/pgao/src/db"
 )
+
+// fakePinger lets us drive ReadinessCheck without touching a real pool.
+type fakePinger struct {
+	clusters []string
+	errs     map[string]error
+}
+
+func (f *fakePinger) GetAllClusters() []string                   { return f.clusters }
+func (f *fakePinger) PingAll(_ context.Context) map[string]error { return f.errs }
 
 func newTestHandler() (*Handler, *mux.Router) {
 	log := logrus.New()
@@ -60,6 +71,70 @@ func TestReadinessReturns503WhenNoClusters(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when no clusters, got %d", w.Code)
+	}
+}
+
+func TestReadinessReturns503WhenAllClustersDown(t *testing.T) {
+	h, _ := newTestHandler()
+	h.WithPinger(&fakePinger{
+		clusters: []string{"c1", "c2"},
+		errs: map[string]error{
+			"c1": errors.New("connection refused"),
+			"c2": errors.New("dial timeout"),
+		},
+	})
+	r := mux.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when all clusters unhealthy, got %d body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["status"] != "not_ready" {
+		t.Errorf("status mismatch: %+v", body)
+	}
+	if body["healthy"].(float64) != 0 {
+		t.Errorf("healthy count mismatch: %+v", body)
+	}
+	clusters, _ := body["clusters"].(map[string]interface{})
+	if !strings.Contains(clusters["c1"].(string), "connection refused") {
+		t.Errorf("c1 status should surface the error: %+v", clusters)
+	}
+}
+
+func TestReadinessReturns200WhenAtLeastOneClusterHealthy(t *testing.T) {
+	h, _ := newTestHandler()
+	h.WithPinger(&fakePinger{
+		clusters: []string{"c1", "c2"},
+		errs: map[string]error{
+			"c1": nil,
+			"c2": errors.New("boom"),
+		},
+	})
+	r := mux.NewRouter()
+	h.RegisterRoutes(r)
+
+	req := httptest.NewRequest(http.MethodGet, "/ready", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 when one cluster healthy, got %d body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if body["healthy"].(float64) != 1 {
+		t.Errorf("expected healthy=1, got %+v", body["healthy"])
+	}
+	if body["status"] != "ready" {
+		t.Errorf("expected status=ready, got %+v", body)
 	}
 }
 

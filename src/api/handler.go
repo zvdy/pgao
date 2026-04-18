@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/sirupsen/logrus"
@@ -12,15 +14,29 @@ import (
 	"github.com/zvdy/pgao/src/models"
 )
 
+// clusterPinger is the minimal surface the readiness check needs. Kept as an
+// unexported interface so handlers can be unit-tested with a fake while the
+// real implementation stays *db.ConnectionPool.
+type clusterPinger interface {
+	GetAllClusters() []string
+	PingAll(ctx context.Context) map[string]error
+}
+
 // Handler handles API requests
 type Handler struct {
 	pool                *db.ConnectionPool
+	pinger              clusterPinger
 	queryAnalyzer       *analyzer.QueryAnalyzer
 	performanceAnalyzer *analyzer.PerformanceAnalyzer
 	metricsCollector    *collector.MetricsCollector
 	clusterCollector    *collector.ClusterCollector
 	log                 *logrus.Logger
 }
+
+// readinessPingTimeout caps how long the readiness handler will wait on any
+// single cluster. Kubernetes probes have their own deadline; we want to answer
+// quickly with per-cluster errors rather than stall the whole probe.
+const readinessPingTimeout = 2 * time.Second
 
 // NewHandler creates a new API handler
 func NewHandler(
@@ -33,12 +49,20 @@ func NewHandler(
 ) *Handler {
 	return &Handler{
 		pool:                pool,
+		pinger:              pool,
 		queryAnalyzer:       queryAnalyzer,
 		performanceAnalyzer: performanceAnalyzer,
 		metricsCollector:    metricsCollector,
 		clusterCollector:    clusterCollector,
 		log:                 log,
 	}
+}
+
+// WithPinger overrides the readiness pinger. Used by tests to inject a fake
+// so handler behaviour can be asserted without a real PostgreSQL cluster.
+func (h *Handler) WithPinger(p clusterPinger) *Handler {
+	h.pinger = p
+	return h
 }
 
 // RegisterRoutes registers all API routes
@@ -70,27 +94,49 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 	h.respondJSON(w, http.StatusOK, response)
 }
 
-// ReadinessCheck checks if the service is ready
+// ReadinessCheck reports ready only when at least one registered cluster
+// responds to a ping. Per-cluster status is included so operators can see
+// which clusters are down without tailing logs.
 func (h *Handler) ReadinessCheck(w http.ResponseWriter, r *http.Request) {
-	clusters := h.pool.GetAllClusters()
+	clusters := h.pinger.GetAllClusters()
+	if len(clusters) == 0 {
+		h.respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"status":   "not_ready",
+			"reason":   "no clusters registered",
+			"clusters": map[string]string{},
+		})
+		return
+	}
 
-	ready := len(clusters) > 0
+	ctx, cancel := context.WithTimeout(r.Context(), readinessPingTimeout)
+	defer cancel()
+
+	results := h.pinger.PingAll(ctx)
+
+	perCluster := make(map[string]string, len(results))
+	healthy := 0
+	for _, id := range clusters {
+		if err, ok := results[id]; ok && err != nil {
+			perCluster[id] = "unhealthy: " + err.Error()
+			continue
+		}
+		perCluster[id] = "ok"
+		healthy++
+	}
+
 	status := "ready"
-	if !ready {
+	code := http.StatusOK
+	if healthy == 0 {
 		status = "not_ready"
+		code = http.StatusServiceUnavailable
 	}
 
-	response := map[string]interface{}{
+	h.respondJSON(w, code, map[string]interface{}{
 		"status":   status,
-		"clusters": len(clusters),
-	}
-
-	statusCode := http.StatusOK
-	if !ready {
-		statusCode = http.StatusServiceUnavailable
-	}
-
-	h.respondJSON(w, statusCode, response)
+		"healthy":  healthy,
+		"total":    len(clusters),
+		"clusters": perCluster,
+	})
 }
 
 // ListClusters returns list of all clusters
