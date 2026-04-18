@@ -153,6 +153,36 @@ func (cp *ConnectionPool) HealthCheck(clusterID string) error {
 	return pool.Ping(ctx)
 }
 
+// PingAll pings every registered cluster concurrently. Returns a map of
+// clusterID to ping error (nil on success). The shared ctx bounds the entire
+// call; slow clusters surface as context.DeadlineExceeded errors.
+func (cp *ConnectionPool) PingAll(ctx context.Context) map[string]error {
+	cp.mu.RLock()
+	snapshot := make(map[string]*pgxpool.Pool, len(cp.pools))
+	for id, p := range cp.pools {
+		snapshot[id] = p
+	}
+	cp.mu.RUnlock()
+
+	results := make(map[string]error, len(snapshot))
+	var (
+		wg sync.WaitGroup
+		mu sync.Mutex
+	)
+	for id, pool := range snapshot {
+		wg.Add(1)
+		go func(id string, pool *pgxpool.Pool) {
+			defer wg.Done()
+			err := pool.Ping(ctx)
+			mu.Lock()
+			results[id] = err
+			mu.Unlock()
+		}(id, pool)
+	}
+	wg.Wait()
+	return results
+}
+
 // GetAllClusters returns a list of all cluster IDs
 func (cp *ConnectionPool) GetAllClusters() []string {
 	cp.mu.RLock()
