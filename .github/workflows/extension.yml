@@ -1,0 +1,61 @@
+name: Extension (pg_regress)
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'extension/**'
+      - '.github/workflows/extension.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'extension/**'
+      - '.github/workflows/extension.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pg-regress:
+    name: pg_regress (PG ${{ matrix.pg }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [15, 16, 17]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL ${{ matrix.pg }} + server-dev
+        run: |
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
+
+      - name: Build + install pgao extension
+        run: |
+          cd extension
+          make PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          sudo make install PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Run pg_regress
+        run: |
+          # Copy extension into /tmp so the postgres user can traverse every
+          # parent directory (runner's $HOME is not world-traversable).
+          sudo rm -rf /tmp/pgao-ext
+          sudo cp -r extension /tmp/pgao-ext
+          sudo chown -R postgres:postgres /tmp/pgao-ext
+          sudo -u postgres make -C /tmp/pgao-ext installcheck \
+            PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+
+      - name: Dump regression.diffs on failure
+        if: failure()
+        run: |
+          sudo cat /tmp/pgao-ext/regression.diffs || true
+          sudo cat /tmp/pgao-ext/log/initdb.log || true
+          sudo cat /tmp/pgao-ext/regression.out || true
