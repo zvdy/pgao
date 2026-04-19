@@ -1,0 +1,22 @@
+-- pgao.table_bloat() surfaces user table counters from pg_stat_user_tables
+-- with a computed bloat_pct.
+CREATE EXTENSION pgao;
+
+-- Seed a user table so pg_stat_user_tables has at least one entry.
+CREATE TABLE pgao_test_bloat (id int, payload text);
+INSERT INTO pgao_test_bloat SELECT g, 'row-' || g FROM generate_series(1, 10) g;
+DELETE FROM pgao_test_bloat WHERE id <= 3;
+-- Stats collector is asynchronous; force an analyze so n_live_tup / n_dead_tup
+-- are populated deterministically.
+ANALYZE pgao_test_bloat;
+
+-- Row is visible.
+SELECT count(*) FROM pgao.table_bloat() WHERE relname = 'pgao_test_bloat';
+
+-- bloat_pct is non-negative for our seeded table.
+SELECT bloat_pct >= 0 AS bloat_nonneg
+FROM pgao.table_bloat()
+WHERE relname = 'pgao_test_bloat';
+
+DROP TABLE pgao_test_bloat;
+DROP EXTENSION pgao;

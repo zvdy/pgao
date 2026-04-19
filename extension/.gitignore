@@ -1,0 +1,14 @@
+log/
+results/
+tmp_check/
+regression.diffs
+regression.out
+*.o
+*.so
+
+# Un-ignore files that the root .gitignore excludes globally.
+!sql/
+!sql/*.sql
+!expected/
+!expected/*.out
+!pgao--*.sql
