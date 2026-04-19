@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/analyzer"
 	"github.com/zvdy/pgao/src/collector"
@@ -31,6 +33,7 @@ type Handler struct {
 	metricsCollector    *collector.MetricsCollector
 	clusterCollector    *collector.ClusterCollector
 	log                 *logrus.Logger
+	promRegistry        prometheus.Gatherer
 }
 
 // readinessPingTimeout caps how long the readiness handler will wait on any
@@ -65,11 +68,25 @@ func (h *Handler) WithPinger(p clusterPinger) *Handler {
 	return h
 }
 
+// WithPromRegistry attaches a Prometheus gatherer; when set, /metrics is
+// registered. Defaults to the global registry if nil.
+func (h *Handler) WithPromRegistry(g prometheus.Gatherer) *Handler {
+	h.promRegistry = g
+	return h
+}
+
 // RegisterRoutes registers all API routes
 func (h *Handler) RegisterRoutes(r *mux.Router) {
 	// Health check
 	r.HandleFunc("/health", h.HealthCheck).Methods("GET")
 	r.HandleFunc("/ready", h.ReadinessCheck).Methods("GET")
+
+	// Prometheus metrics
+	gatherer := h.promRegistry
+	if gatherer == nil {
+		gatherer = prometheus.DefaultGatherer
+	}
+	r.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})).Methods("GET")
 
 	// Cluster endpoints
 	r.HandleFunc("/api/v1/clusters", h.ListClusters).Methods("GET")

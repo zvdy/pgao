@@ -149,7 +149,7 @@ docker-logs:
 # Terraform commands
 terraform-init:
 	@echo "Initializing Terraform..."
-	cd terraform && terraform init
+	cd terraform && terraform init -backend=false -input=false
 
 terraform-plan:
 	@echo "Planning Terraform changes..."

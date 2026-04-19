@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,16 +12,18 @@ import (
 	"github.com/zvdy/pgao/src/models"
 )
 
-// MetricsCollector gathers performance metrics from PostgreSQL clusters
+// MetricsCollector gathers performance metrics from PostgreSQL clusters.
 type MetricsCollector struct {
 	pool     *db.ConnectionPool
 	log      *logrus.Logger
 	interval time.Duration
 	rates    *rateCache
 	now      func() time.Time
+
+	mu     sync.RWMutex
+	latest map[string]*models.Metrics
 }
 
-// NewMetricsCollector creates a new MetricsCollector instance
 func NewMetricsCollector(pool *db.ConnectionPool, log *logrus.Logger, interval time.Duration) *MetricsCollector {
 	return &MetricsCollector{
 		pool:     pool,
@@ -28,7 +31,26 @@ func NewMetricsCollector(pool *db.ConnectionPool, log *logrus.Logger, interval t
 		interval: interval,
 		rates:    newRateCache(),
 		now:      time.Now,
+		latest:   make(map[string]*models.Metrics),
 	}
+}
+
+// LatestMetrics returns a snapshot of the most recent per-cluster metrics.
+// Used by the Prometheus exporter so /metrics never blocks on Postgres.
+func (mc *MetricsCollector) LatestMetrics() map[string]*models.Metrics {
+	mc.mu.RLock()
+	defer mc.mu.RUnlock()
+	out := make(map[string]*models.Metrics, len(mc.latest))
+	for k, v := range mc.latest {
+		out[k] = v
+	}
+	return out
+}
+
+func (mc *MetricsCollector) cacheLatest(clusterID string, m *models.Metrics) {
+	mc.mu.Lock()
+	mc.latest[clusterID] = m
+	mc.mu.Unlock()
 }
 
 // Start begins collecting metrics for all clusters
@@ -104,6 +126,7 @@ func (mc *MetricsCollector) CollectClusterMetrics(ctx context.Context, clusterID
 		mc.log.Warnf("Failed to collect disk I/O metrics: %v", err)
 	}
 
+	mc.cacheLatest(clusterID, metrics)
 	mc.log.Debugf("Collected metrics for cluster %s", clusterID)
 	return metrics, nil
 }
