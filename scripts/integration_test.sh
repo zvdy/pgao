@@ -40,6 +40,14 @@ main() {
   echo "$body" | grep -q "integration-test" || fail "configured cluster not listed in /api/v1/clusters: $body"
   pass "cluster listed in response"
 
+  echo "--- GET /api/v1/clusters/integration-test ---"
+  detail="$(curl -sf "$HOST/api/v1/clusters/integration-test")"
+  echo "$detail" | grep -q '"version":"PostgreSQL' \
+    || fail "cluster detail missing real PostgreSQL version (issue #3): $detail"
+  echo "$detail" | grep -q '"databases"' \
+    || fail "cluster detail missing databases list: $detail"
+  pass "cluster detail returns real version + databases"
+
   echo "--- GET /api/v1/clusters/integration-test/metrics ---"
   metrics="$(curl -sf "$HOST/api/v1/clusters/integration-test/metrics")"
   echo "$metrics" | grep -q '"cluster_id":"integration-test"' \
