@@ -29,8 +29,11 @@ jobs:
 
       - name: Install PostgreSQL ${{ matrix.pg }} + server-dev
         run: |
-          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
-          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
           sudo apt-get update -y
           sudo apt-get install -y postgresql-${{ matrix.pg }} postgresql-server-dev-${{ matrix.pg }}
 
@@ -42,11 +45,17 @@ jobs:
 
       - name: Run pg_regress
         run: |
-          sudo chown -R postgres:postgres extension
-          sudo -u postgres make -C extension installcheck PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
+          # Copy extension into /tmp so the postgres user can traverse every
+          # parent directory (runner's $HOME is not world-traversable).
+          sudo rm -rf /tmp/pgao-ext
+          sudo cp -r extension /tmp/pgao-ext
+          sudo chown -R postgres:postgres /tmp/pgao-ext
+          sudo -u postgres make -C /tmp/pgao-ext installcheck \
+            PG_CONFIG=/usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
 
       - name: Dump regression.diffs on failure
         if: failure()
         run: |
-          cat extension/regression.diffs || true
-          cat extension/log/initdb.log || true
+          sudo cat /tmp/pgao-ext/regression.diffs || true
+          sudo cat /tmp/pgao-ext/log/initdb.log || true
+          sudo cat /tmp/pgao-ext/regression.out || true
