@@ -98,7 +98,16 @@ jobs:
           curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
 
       - name: Initialize Terraform
-        run: make terraform-init
+        run: |
+          for attempt in 1 2 3; do
+            if make terraform-init; then
+              exit 0
+            fi
+            echo "terraform init failed on attempt $attempt, retrying..."
+            sleep $((attempt * 5))
+          done
+          echo "terraform init failed after 3 attempts"
+          exit 1
 
       - name: Check Terraform formatting
         run: |
