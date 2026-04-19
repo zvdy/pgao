@@ -91,23 +91,14 @@ jobs:
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0
+          terraform_version: 1.10.0
 
       - name: Install tflint
         run: |
           curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
 
       - name: Initialize Terraform
-        run: |
-          for attempt in 1 2 3; do
-            if make terraform-init; then
-              exit 0
-            fi
-            echo "terraform init failed on attempt $attempt, retrying..."
-            sleep $((attempt * 5))
-          done
-          echo "terraform init failed after 3 attempts"
-          exit 1
+        run: make terraform-init
 
       - name: Check Terraform formatting
         run: |
