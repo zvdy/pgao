@@ -2,15 +2,23 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/db"
 	"github.com/zvdy/pgao/src/models"
 )
+
+// ErrPgStatStatementsMissing is returned by CollectQueryMetrics when the
+// pg_stat_statements extension is not installed on the target cluster.
+// Handlers surface this as HTTP 412 Precondition Failed so operators know
+// they need to `CREATE EXTENSION pg_stat_statements`.
+var ErrPgStatStatementsMissing = errors.New("pg_stat_statements extension not installed")
 
 // MetricsCollector gathers performance metrics from PostgreSQL clusters.
 type MetricsCollector struct {
@@ -308,17 +316,45 @@ func (mc *MetricsCollector) collectDiskIOMetrics(ctx context.Context, clusterID 
 	return nil
 }
 
-// CollectQueryMetrics returns the top 100 queries by mean execution time from
-// pg_stat_statements. The extension must be installed; if it isn't, callers
-// will see a `relation "pg_stat_statements" does not exist` error from pgx.
-// Issue #7 will add the precondition check + per-request limit/order knobs.
-func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID, database string) ([]*models.QueryMetrics, error) {
+// SlowQueryOptions controls the shape of CollectQueryMetrics results.
+// Zero values fall back to sensible defaults (Limit=100, OrderBy=mean_exec_time).
+type SlowQueryOptions struct {
+	Limit    int
+	OrderBy  string // "mean_exec_time" | "total_exec_time" | "calls"
+	Database string // reserved for future per-database filtering
+}
+
+// allowedSlowQueryOrderBy maps the allowed OrderBy values to the
+// pg_stat_statements column names used in the query. Restricting to a fixed
+// set keeps the SQL safe from injection via query parameters.
+var allowedSlowQueryOrderBy = map[string]string{
+	"mean_exec_time":  "mean_exec_time",
+	"total_exec_time": "total_exec_time",
+	"calls":           "calls",
+}
+
+// CollectQueryMetrics returns the top queries by the chosen ordering from
+// pg_stat_statements. Returns ErrPgStatStatementsMissing when the extension
+// is not installed so callers can surface a precondition failure.
+func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID string, opts SlowQueryOptions) ([]*models.QueryMetrics, error) {
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	query := `
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	orderCol, ok := allowedSlowQueryOrderBy[opts.OrderBy]
+	if !ok {
+		orderCol = "mean_exec_time"
+	}
+
+	query := fmt.Sprintf(`
 		SELECT
 			queryid::text,
 			query,
@@ -332,19 +368,22 @@ func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID, 
 			temp_blks_read,
 			temp_blks_written
 		FROM pg_stat_statements
-		ORDER BY mean_exec_time DESC
-		LIMIT 100
-	`
+		ORDER BY %s DESC
+		LIMIT $1
+	`, orderCol)
 
-	rows, err := pool.Query(ctx, query)
+	rows, err := pool.Query(ctx, query, limit)
 	if err != nil {
+		if isUndefinedTable(err) {
+			return nil, ErrPgStatStatementsMissing
+		}
 		return nil, fmt.Errorf("query pg_stat_statements: %w", err)
 	}
 	defer rows.Close()
 
 	results := make([]*models.QueryMetrics, 0)
 	for rows.Next() {
-		qm := models.NewQueryMetrics("", "", clusterID, database)
+		qm := models.NewQueryMetrics("", "", clusterID, opts.Database)
 		if err := rows.Scan(
 			&qm.QueryID,
 			&qm.Query,
@@ -363,17 +402,35 @@ func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID, 
 		results = append(results, qm)
 	}
 	if err := rows.Err(); err != nil {
+		if isUndefinedTable(err) {
+			return nil, ErrPgStatStatementsMissing
+		}
 		return nil, fmt.Errorf("iterate query rows: %w", err)
 	}
 	return results, nil
 }
 
-// CollectTableMetrics returns the top 100 user tables by total scan activity
+// TableMetricsOptions controls CollectTableMetrics. Zero Limit falls back to
+// 100 and is capped at 500.
+type TableMetricsOptions struct {
+	Limit    int
+	Database string // reserved for future per-database filtering
+}
+
+// CollectTableMetrics returns the top user tables by total scan activity
 // from pg_stat_user_tables.
-func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID, database string) ([]*models.TableMetrics, error) {
+func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID string, opts TableMetricsOptions) ([]*models.TableMetrics, error) {
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
+	}
+
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
 	}
 
 	query := `
@@ -398,10 +455,10 @@ func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID, 
 			last_analyze
 		FROM pg_stat_user_tables
 		ORDER BY COALESCE(seq_scan, 0) + COALESCE(idx_scan, 0) DESC
-		LIMIT 100
+		LIMIT $1
 	`
 
-	rows, err := pool.Query(ctx, query)
+	rows, err := pool.Query(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query pg_stat_user_tables: %w", err)
 	}
@@ -409,7 +466,7 @@ func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID, 
 
 	results := make([]*models.TableMetrics, 0)
 	for rows.Next() {
-		tm := models.NewTableMetrics(clusterID, database, "", "")
+		tm := models.NewTableMetrics(clusterID, opts.Database, "", "")
 		if err := rows.Scan(
 			&tm.Schema,
 			&tm.Table,
@@ -448,4 +505,15 @@ func (mc *MetricsCollector) GetMetricsSnapshot(ctx context.Context, clusterID st
 	}
 
 	return metrics, nil
+}
+
+// isUndefinedTable reports whether err is a Postgres "relation does not exist"
+// (SQLSTATE 42P01). Used to translate a missing pg_stat_statements view into
+// the ErrPgStatStatementsMissing sentinel.
+func isUndefinedTable(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "42P01"
+	}
+	return false
 }

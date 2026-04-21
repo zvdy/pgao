@@ -69,6 +69,18 @@ main() {
   [ "$code" = "400" ] || fail "empty body should return 400, got $code"
   pass "analyze rejects empty body"
 
+  echo "--- GET /api/v1/clusters/integration-test/queries ---"
+  queries="$(curl -sf "$HOST/api/v1/clusters/integration-test/queries?limit=5&order_by=total_exec_time")"
+  echo "$queries" | grep -q '\[' \
+    || fail "/queries did not return a JSON array: $queries"
+  pass "/queries returned a JSON array"
+
+  echo "--- GET /api/v1/clusters/integration-test/tables ---"
+  tables="$(curl -sf "$HOST/api/v1/clusters/integration-test/tables?limit=5")"
+  echo "$tables" | grep -q '\[' \
+    || fail "/tables did not return a JSON array: $tables"
+  pass "/tables returned a JSON array"
+
   echo "--- GET /metrics ---"
   prom="$(curl -sf "$HOST/metrics")"
   echo "$prom" | grep -q '^pgao_cluster_up' \

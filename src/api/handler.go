@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -13,7 +15,6 @@ import (
 	"github.com/zvdy/pgao/src/analyzer"
 	"github.com/zvdy/pgao/src/collector"
 	"github.com/zvdy/pgao/src/db"
-	"github.com/zvdy/pgao/src/models"
 )
 
 // clusterPinger is the minimal surface the readiness check needs. Kept as an
@@ -234,30 +235,65 @@ func (h *Handler) AnalyzeQuery(w http.ResponseWriter, r *http.Request) {
 	h.respondJSON(w, http.StatusOK, analysis)
 }
 
-// GetSlowQueries returns slow queries for a cluster
+// GetSlowQueries returns slow queries from pg_stat_statements.
+// Query params: ?limit (1-500, default 100), ?order_by (mean_exec_time |
+// total_exec_time | calls), ?database (filter label only for now).
+// Returns 412 Precondition Failed when pg_stat_statements is not installed.
 func (h *Handler) GetSlowQueries(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clusterID := vars["id"]
 
-	// This would typically query the database for slow query logs
-	_ = clusterID
+	opts := collector.SlowQueryOptions{
+		Limit:    parseLimit(r.URL.Query().Get("limit")),
+		OrderBy:  r.URL.Query().Get("order_by"),
+		Database: r.URL.Query().Get("database"),
+	}
 
-	slowQueries := make([]*models.SlowQuery, 0)
-	h.respondJSON(w, http.StatusOK, slowQueries)
+	queries, err := h.metricsCollector.CollectQueryMetrics(r.Context(), clusterID, opts)
+	if err != nil {
+		if errors.Is(err, collector.ErrPgStatStatementsMissing) {
+			h.respondError(w, http.StatusPreconditionFailed,
+				"pg_stat_statements extension is not installed on this cluster; run CREATE EXTENSION pg_stat_statements")
+			return
+		}
+		h.respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	h.respondJSON(w, http.StatusOK, queries)
 }
 
-// GetTableMetrics returns table metrics for a cluster
+// GetTableMetrics returns table metrics from pg_stat_user_tables.
+// Query params: ?limit (1-500, default 100), ?database (filter label only).
 func (h *Handler) GetTableMetrics(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	clusterID := vars["id"]
 
-	tableMetrics, err := h.metricsCollector.CollectTableMetrics(r.Context(), clusterID, "")
+	opts := collector.TableMetricsOptions{
+		Limit:    parseLimit(r.URL.Query().Get("limit")),
+		Database: r.URL.Query().Get("database"),
+	}
+
+	tableMetrics, err := h.metricsCollector.CollectTableMetrics(r.Context(), clusterID, opts)
 	if err != nil {
 		h.respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	h.respondJSON(w, http.StatusOK, tableMetrics)
+}
+
+// parseLimit parses a user-provided ?limit value. Returns 0 when the value
+// is missing or invalid so the collector applies its default.
+func parseLimit(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // GetAlerts returns active alerts for a cluster
