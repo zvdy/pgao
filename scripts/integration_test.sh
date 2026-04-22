@@ -70,11 +70,21 @@ main() {
   pass "analyze rejects empty body"
 
   echo "--- POST /api/v1/analyze (oversized body) ---"
-  # Fire a 2 MiB body past the default 1 MiB cap.
-  big="$(head -c 2097152 /dev/zero | tr '\0' A)"
+  # Fire a 2 MiB body past the default 1 MiB cap. Pipe via a temp file —
+  # passing the body inline overflows ARG_MAX (2 MiB on Linux) and the
+  # shell reports exit 126 before curl ever runs.
+  bigfile="$(mktemp)"
+  trap 'rm -f "$bigfile"' EXIT
+  {
+    printf '{"query":"'
+    head -c 2097152 /dev/zero | tr '\0' A
+    printf '"}'
+  } > "$bigfile"
   code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
     -H 'Content-Type: application/json' \
-    --data-binary "{\"query\":\"$big\"}" "$HOST/api/v1/analyze")"
+    --data-binary "@$bigfile" "$HOST/api/v1/analyze")"
+  rm -f "$bigfile"
+  trap - EXIT
   case "$code" in
     413|400) pass "oversized body rejected -> $code" ;;
     *) fail "oversized body should be rejected (413/400), got $code" ;;
