@@ -35,6 +35,18 @@ type Handler struct {
 	clusterCollector    *collector.ClusterCollector
 	log                 *logrus.Logger
 	promRegistry        prometheus.Gatherer
+	sec                 SecurityOptions
+}
+
+// SecurityOptions controls the middleware applied to /api/v1/*. Zero value
+// is safe: no auth, no rate limit, 1 MiB body cap, 5s request timeout.
+// Non-zero fields override the defaults.
+type SecurityOptions struct {
+	APIKey         string
+	RequestTimeout time.Duration
+	MaxBodyBytes   int64
+	RateLimitRPS   float64
+	RateLimitBurst int
 }
 
 // readinessPingTimeout caps how long the readiness handler will wait on any
@@ -76,32 +88,67 @@ func (h *Handler) WithPromRegistry(g prometheus.Gatherer) *Handler {
 	return h
 }
 
-// RegisterRoutes registers all API routes
+// WithSecurity configures the middleware applied to /api/v1/*. Must be
+// called before RegisterRoutes; later calls have no effect.
+func (h *Handler) WithSecurity(opts SecurityOptions) *Handler {
+	h.sec = opts
+	return h
+}
+
+// RegisterRoutes registers all API routes. /health, /ready, and /metrics are
+// never wrapped in auth/timeout/rate-limit middleware so k8s probes and
+// Prometheus scrapes keep working even if the caller has no API key.
 func (h *Handler) RegisterRoutes(r *mux.Router) {
-	// Health check
-	r.HandleFunc("/health", h.HealthCheck).Methods("GET")
-	r.HandleFunc("/ready", h.ReadinessCheck).Methods("GET")
+	// Health + probes: recoverer only, so a panic doesn't leak the pod.
+	rec := recoverer(h.log)
+	reqLog := requestLogger(h.log)
+	r.Handle("/health", chain(http.HandlerFunc(h.HealthCheck), rec, reqLog)).Methods("GET")
+	r.Handle("/ready", chain(http.HandlerFunc(h.ReadinessCheck), rec, reqLog)).Methods("GET")
 
 	// Prometheus metrics
 	gatherer := h.promRegistry
 	if gatherer == nil {
 		gatherer = prometheus.DefaultGatherer
 	}
-	r.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{})).Methods("GET")
+	r.Handle("/metrics", chain(
+		promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}),
+		rec, reqLog,
+	)).Methods("GET")
 
-	// Cluster endpoints
-	r.HandleFunc("/api/v1/clusters", h.ListClusters).Methods("GET")
-	r.HandleFunc("/api/v1/clusters/{id}", h.GetCluster).Methods("GET")
-	r.HandleFunc("/api/v1/clusters/{id}/metrics", h.GetClusterMetrics).Methods("GET")
-	r.HandleFunc("/api/v1/clusters/{id}/health", h.GetClusterHealth).Methods("GET")
+	// /api/v1/* shares a subrouter so the middleware chain is applied once.
+	reqTimeout := h.sec.RequestTimeout
+	if reqTimeout <= 0 {
+		reqTimeout = 5 * time.Second
+	}
+	maxBytes := h.sec.MaxBodyBytes
+	if maxBytes <= 0 {
+		maxBytes = 1 << 20
+	}
 
-	// Query analysis endpoints
-	r.HandleFunc("/api/v1/analyze", h.AnalyzeQuery).Methods("POST")
-	r.HandleFunc("/api/v1/clusters/{id}/queries", h.GetSlowQueries).Methods("GET")
+	api := r.PathPrefix("/api/v1").Subrouter()
+	api.Use(
+		muxMiddleware(rec),
+		muxMiddleware(reqLog),
+		muxMiddleware(rateLimit(h.sec.RateLimitRPS, h.sec.RateLimitBurst)),
+		muxMiddleware(timeout(reqTimeout)),
+		muxMiddleware(maxBody(maxBytes)),
+		muxMiddleware(apiKeyAuth(h.sec.APIKey)),
+	)
+	api.HandleFunc("/clusters", h.ListClusters).Methods("GET")
+	api.HandleFunc("/clusters/{id}", h.GetCluster).Methods("GET")
+	api.HandleFunc("/clusters/{id}/metrics", h.GetClusterMetrics).Methods("GET")
+	api.HandleFunc("/clusters/{id}/health", h.GetClusterHealth).Methods("GET")
+	api.HandleFunc("/analyze", h.AnalyzeQuery).Methods("POST")
+	api.HandleFunc("/clusters/{id}/queries", h.GetSlowQueries).Methods("GET")
+	api.HandleFunc("/clusters/{id}/tables", h.GetTableMetrics).Methods("GET")
+	api.HandleFunc("/clusters/{id}/alerts", h.GetAlerts).Methods("GET")
+}
 
-	// Metrics endpoints
-	r.HandleFunc("/api/v1/clusters/{id}/tables", h.GetTableMetrics).Methods("GET")
-	r.HandleFunc("/api/v1/clusters/{id}/alerts", h.GetAlerts).Methods("GET")
+// muxMiddleware adapts a plain http middleware to the mux.MiddlewareFunc
+// signature. Both are `func(http.Handler) http.Handler` — the adapter only
+// exists to keep the type assertion local.
+func muxMiddleware(mw func(http.Handler) http.Handler) mux.MiddlewareFunc {
+	return mw
 }
 
 // HealthCheck returns the health status
@@ -184,7 +231,7 @@ func (h *Handler) GetClusterMetrics(w http.ResponseWriter, r *http.Request) {
 
 	metrics, err := h.metricsCollector.GetMetricsSnapshot(r.Context(), clusterID)
 	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "GetClusterMetrics", err)
 		return
 	}
 
@@ -198,7 +245,7 @@ func (h *Handler) GetClusterHealth(w http.ResponseWriter, r *http.Request) {
 
 	metrics, err := h.metricsCollector.GetMetricsSnapshot(r.Context(), clusterID)
 	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "GetClusterHealth", err)
 		return
 	}
 
@@ -228,7 +275,7 @@ func (h *Handler) AnalyzeQuery(w http.ResponseWriter, r *http.Request) {
 
 	analysis, err := h.queryAnalyzer.Analyze(req.Query)
 	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "AnalyzeQuery", err)
 		return
 	}
 
@@ -256,7 +303,7 @@ func (h *Handler) GetSlowQueries(w http.ResponseWriter, r *http.Request) {
 				"pg_stat_statements extension is not installed on this cluster; run CREATE EXTENSION pg_stat_statements")
 			return
 		}
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "GetSlowQueries", err)
 		return
 	}
 
@@ -276,7 +323,7 @@ func (h *Handler) GetTableMetrics(w http.ResponseWriter, r *http.Request) {
 
 	tableMetrics, err := h.metricsCollector.CollectTableMetrics(r.Context(), clusterID, opts)
 	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "GetTableMetrics", err)
 		return
 	}
 
@@ -303,7 +350,7 @@ func (h *Handler) GetAlerts(w http.ResponseWriter, r *http.Request) {
 
 	metrics, err := h.metricsCollector.GetMetricsSnapshot(r.Context(), clusterID)
 	if err != nil {
-		h.respondError(w, http.StatusInternalServerError, err.Error())
+		h.respondInternal(w, r, "GetAlerts", err)
 		return
 	}
 
@@ -320,10 +367,21 @@ func (h *Handler) respondJSON(w http.ResponseWriter, statusCode int, data interf
 	}
 }
 
-// respondError sends an error response
+// respondError sends an error response with a caller-supplied safe message.
 func (h *Handler) respondError(w http.ResponseWriter, statusCode int, message string) {
 	response := map[string]string{
 		"error": message,
 	}
 	h.respondJSON(w, statusCode, response)
+}
+
+// respondInternal logs the underlying error with context and returns a
+// generic "internal server error" to the client. Use for errors the caller
+// has no business seeing (query failures, connection errors, etc).
+func (h *Handler) respondInternal(w http.ResponseWriter, r *http.Request, op string, err error) {
+	h.log.WithError(err).WithFields(logrus.Fields{
+		"op":   op,
+		"path": r.URL.Path,
+	}).Error("handler error")
+	h.respondError(w, http.StatusInternalServerError, "internal server error")
 }

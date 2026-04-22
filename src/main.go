@@ -113,7 +113,19 @@ func main() {
 		metricsCollector,
 		clusterCollector,
 		log,
-	).WithPromRegistry(promReg)
+	).WithPromRegistry(promReg).WithSecurity(api.SecurityOptions{
+		APIKey:         cfg.Server.Auth.APIKey,
+		RequestTimeout: cfg.Server.RequestTimeout,
+		MaxBodyBytes:   cfg.Server.MaxBodyBytes,
+		RateLimitRPS:   cfg.Server.RateLimitRPS,
+		RateLimitBurst: cfg.Server.RateLimitBurst,
+	})
+
+	if cfg.Server.Auth.APIKey != "" {
+		log.Info("API key authentication enabled for /api/v1/*")
+	} else {
+		log.Warn("API key authentication is disabled; /api/v1/* is open")
+	}
 
 	// Setup HTTP router
 	router := mux.NewRouter()
