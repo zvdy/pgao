@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/zvdy/pgao/src/db"
 	"github.com/zvdy/pgao/src/models"
 )
 
@@ -17,6 +18,12 @@ type fakeSource struct {
 }
 
 func (f *fakeSource) LatestMetrics() map[string]*models.Metrics { return f.snap }
+
+type fakeStates struct {
+	states map[string]db.ClusterStatus
+}
+
+func (f *fakeStates) AllStates() map[string]db.ClusterStatus { return f.states }
 
 func gather(t *testing.T, exp *Exporter) string {
 	t.Helper()
@@ -100,6 +107,43 @@ func TestExporter_DescribeReturnsAllDescs(t *testing.T) {
 	}
 	if got != len(exp.descs()) {
 		t.Errorf("expected %d descs, got %d", len(exp.descs()), got)
+	}
+}
+
+func TestExporter_ClusterUpFollowsStateSource(t *testing.T) {
+	// Metrics snapshot is empty but the supervisor knows about two clusters:
+	// one healthy, one unhealthy. The exporter should still emit cluster_up
+	// rows for both.
+	src := &fakeSource{snap: map[string]*models.Metrics{}}
+	states := &fakeStates{states: map[string]db.ClusterStatus{
+		"alive": {State: db.StateHealthy},
+		"dead":  {State: db.StateUnhealthy, LastError: "connection refused"},
+	}}
+	out := gather(t, NewExporter(src).WithStateSource(states))
+	if !strings.Contains(out, `pgao_cluster_up cluster=alive =1`) {
+		t.Errorf("expected healthy cluster_up=1, got:\n%s", out)
+	}
+	if !strings.Contains(out, `pgao_cluster_up cluster=dead =0`) {
+		t.Errorf("expected unhealthy cluster_up=0, got:\n%s", out)
+	}
+}
+
+func TestExporter_StateSourceOverridesMetricsPresence(t *testing.T) {
+	// Metrics snapshot exists but supervisor reports unhealthy — cluster_up
+	// must report the supervisor's view, not the cached sample.
+	src := &fakeSource{snap: map[string]*models.Metrics{
+		"c1": {ClusterID: "c1", ConnectionsActive: 5},
+	}}
+	states := &fakeStates{states: map[string]db.ClusterStatus{
+		"c1": {State: db.StateUnhealthy},
+	}}
+	out := gather(t, NewExporter(src).WithStateSource(states))
+	if !strings.Contains(out, `pgao_cluster_up cluster=c1 =0`) {
+		t.Errorf("state source must override presence, got:\n%s", out)
+	}
+	// Other gauges still emit from the cached sample so operators can debug.
+	if !strings.Contains(out, `pgao_connections_active cluster=c1 =5`) {
+		t.Errorf("other gauges should still emit, got:\n%s", out)
 	}
 }
 

@@ -69,10 +69,12 @@ type LoggingConfig struct {
 
 // MetricsConfig represents metrics collection configuration
 type MetricsConfig struct {
-	CollectionInterval time.Duration `yaml:"collection_interval"`
-	RetentionDays      int           `yaml:"retention_days"`
-	EnablePrometheus   bool          `yaml:"enable_prometheus"`
-	PrometheusPort     int           `yaml:"prometheus_port"`
+	CollectionInterval  time.Duration `yaml:"collection_interval"`
+	RetentionDays       int           `yaml:"retention_days"`
+	EnablePrometheus    bool          `yaml:"enable_prometheus"`
+	PrometheusPort      int           `yaml:"prometheus_port"`
+	QueryTimeout        time.Duration `yaml:"query_timeout"`
+	HealthCheckInterval time.Duration `yaml:"health_check_interval"`
 }
 
 // AWSConfig represents AWS configuration
@@ -159,10 +161,12 @@ func defaultConfig() *Config {
 			Output: "stdout",
 		},
 		Metrics: MetricsConfig{
-			CollectionInterval: 60 * time.Second,
-			RetentionDays:      30,
-			EnablePrometheus:   true,
-			PrometheusPort:     9090,
+			CollectionInterval:  60 * time.Second,
+			RetentionDays:       30,
+			EnablePrometheus:    true,
+			PrometheusPort:      9090,
+			QueryTimeout:        10 * time.Second,
+			HealthCheckInterval: 30 * time.Second,
 		},
 		AWS: AWSConfig{
 			Region:   "us-east-1",

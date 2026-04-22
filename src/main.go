@@ -50,9 +50,15 @@ func main() {
 
 	// Initialize connection pool
 	pool := db.NewConnectionPool(log)
+	pool.SetSupervisorConfig(db.SupervisorConfig{
+		HealthInterval: cfg.Metrics.HealthCheckInterval,
+		ProbeTimeout:   cfg.Metrics.QueryTimeout,
+	})
 	defer pool.Close()
 
-	// Connect to all configured clusters
+	// Register every configured cluster. AddCluster no longer blocks on the
+	// initial ping — it creates the pgxpool (which connects lazily) and
+	// marks the cluster as connecting; the supervisor takes it from there.
 	for _, clusterCfg := range cfg.Clusters {
 		connConfig := db.ConnectionConfig{
 			Host:            clusterCfg.Host,
@@ -66,13 +72,15 @@ func main() {
 			ConnMaxLifetime: clusterCfg.ConnMaxLifetime,
 			ConnMaxIdleTime: clusterCfg.ConnMaxIdleTime,
 		}
-
 		if err := pool.AddCluster(clusterCfg.ID, connConfig); err != nil {
-			log.Errorf("Failed to connect to cluster %s: %v", clusterCfg.ID, err)
+			log.WithError(err).WithField("cluster_id", clusterCfg.ID).Error("register cluster failed")
 			continue
 		}
-
-		log.Infof("Connected to cluster: %s (%s:%d)", clusterCfg.ID, clusterCfg.Host, clusterCfg.Port)
+		log.WithFields(logrus.Fields{
+			"cluster_id": clusterCfg.ID,
+			"host":       clusterCfg.Host,
+			"port":       clusterCfg.Port,
+		}).Info("cluster registered")
 	}
 
 	// Initialize analyzers
@@ -81,27 +89,31 @@ func main() {
 
 	log.Info("Initialized analyzers")
 
-	// Initialize collectors
-	metricsCollector := collector.NewMetricsCollector(pool, log, cfg.Metrics.CollectionInterval)
-	clusterCollector := collector.NewClusterCollector(pool, log, cfg.Metrics.CollectionInterval*2)
+	// Initialize collectors with a per-cluster query timeout so one slow
+	// Postgres can't stall the whole collection cycle.
+	metricsCollector := collector.NewMetricsCollector(pool, log, cfg.Metrics.CollectionInterval).
+		WithQueryTimeout(cfg.Metrics.QueryTimeout)
+	clusterCollector := collector.NewClusterCollector(pool, log, cfg.Metrics.CollectionInterval*2).
+		WithQueryTimeout(cfg.Metrics.QueryTimeout)
 
 	log.Info("Initialized collectors")
 
-	// Start collectors in background
+	// Start collectors + connection supervisor in the background.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	go pool.Supervise(ctx)
 	go metricsCollector.Start(ctx)
 	go clusterCollector.Start(ctx)
 
-	log.Info("Started background collectors")
+	log.Info("Started background collectors + supervisor")
 
 	// Prometheus registry: Go runtime + process collectors + pgao exporter.
 	promReg := prometheus.NewRegistry()
 	promReg.MustRegister(collectors.NewGoCollector())
 	promReg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	if cfg.Metrics.EnablePrometheus {
-		promReg.MustRegister(pgaometrics.NewExporter(metricsCollector))
+		promReg.MustRegister(pgaometrics.NewExporter(metricsCollector).WithStateSource(pool))
 		log.Info("Prometheus exporter registered")
 	}
 

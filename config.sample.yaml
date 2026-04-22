@@ -67,6 +67,13 @@ metrics:
   retention_days: 30
   enable_prometheus: true
   prometheus_port: 9090
+  # Cap applied per cluster on every collection round. A hung Postgres
+  # cancels at this deadline and never blocks the other clusters.
+  query_timeout: 10s
+  # Cadence of the connection supervisor's health probe while a cluster
+  # is reported healthy. Unhealthy clusters use jittered exponential
+  # backoff (5 s -> 60 s).
+  health_check_interval: 30s
 
 aws:
   region: "us-east-1"
