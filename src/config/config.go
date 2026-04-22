@@ -21,11 +21,24 @@ type Config struct {
 
 // ServerConfig represents HTTP server configuration
 type ServerConfig struct {
-	Host         string        `yaml:"host"`
-	Port         int           `yaml:"port"`
-	ReadTimeout  time.Duration `yaml:"read_timeout"`
-	WriteTimeout time.Duration `yaml:"write_timeout"`
-	IdleTimeout  time.Duration `yaml:"idle_timeout"`
+	Host           string        `yaml:"host"`
+	Port           int           `yaml:"port"`
+	ReadTimeout    time.Duration `yaml:"read_timeout"`
+	WriteTimeout   time.Duration `yaml:"write_timeout"`
+	IdleTimeout    time.Duration `yaml:"idle_timeout"`
+	RequestTimeout time.Duration `yaml:"request_timeout"`
+	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
+	RateLimitRPS   float64       `yaml:"rate_limit_rps"`
+	RateLimitBurst int           `yaml:"rate_limit_burst"`
+	Auth           AuthConfig    `yaml:"auth"`
+}
+
+// AuthConfig gates the /api/v1/* surface behind a static bearer token or
+// X-API-Key header. Disabled when APIKey is empty. /health, /ready, and
+// /metrics are always unauthenticated so Kubernetes probes and Prometheus
+// scrapers keep working.
+type AuthConfig struct {
+	APIKey string `yaml:"api_key"`
 }
 
 // ClusterConfig represents a PostgreSQL cluster configuration
@@ -129,11 +142,15 @@ func expandEnvVars(input string) string {
 func defaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:         "0.0.0.0",
-			Port:         8080,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 15 * time.Second,
-			IdleTimeout:  60 * time.Second,
+			Host:           "0.0.0.0",
+			Port:           8080,
+			ReadTimeout:    15 * time.Second,
+			WriteTimeout:   15 * time.Second,
+			IdleTimeout:    60 * time.Second,
+			RequestTimeout: 5 * time.Second,
+			MaxBodyBytes:   1 << 20, // 1 MiB
+			RateLimitRPS:   50,
+			RateLimitBurst: 100,
 		},
 		Clusters: []ClusterConfig{},
 		Logging: LoggingConfig{
@@ -164,6 +181,14 @@ func (c *Config) overrideFromEnv() {
 		if p, err := strconv.Atoi(port); err == nil {
 			c.Server.Port = p
 		}
+	}
+
+	// API auth: honour either PGAO_API_KEY or API_KEY so operators can reuse
+	// an existing k8s Secret naming convention without editing config.yaml.
+	if apiKey := os.Getenv("PGAO_API_KEY"); apiKey != "" {
+		c.Server.Auth.APIKey = apiKey
+	} else if apiKey := os.Getenv("API_KEY"); apiKey != "" {
+		c.Server.Auth.APIKey = apiKey
 	}
 
 	// Logging configuration

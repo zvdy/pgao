@@ -2,8 +2,6 @@ module github.com/zvdy/pgao
 
 go 1.23.0
 
-toolchain go1.24.7
-
 require (
 	github.com/gorilla/mux v1.8.1
 	github.com/jackc/pgx/v5 v5.5.3
@@ -11,6 +9,7 @@ require (
 	github.com/pganalyze/pg_query_go/v6 v6.1.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/sirupsen/logrus v1.9.3
+	golang.org/x/time v0.5.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

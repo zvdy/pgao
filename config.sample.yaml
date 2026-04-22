@@ -7,6 +7,18 @@ server:
   read_timeout: 15s
   write_timeout: 15s
   idle_timeout: 60s
+  # Per-request deadline applied to all /api/v1/* handlers.
+  request_timeout: 5s
+  # Hard cap on request body size (bytes). Bigger bodies get 413.
+  max_body_bytes: 1048576
+  # Process-wide token bucket for /api/v1/*. Set to 0 to disable.
+  rate_limit_rps: 50
+  rate_limit_burst: 100
+  # Optional static API key. When set, /api/v1/* requires either
+  # Authorization: Bearer <key> or X-API-Key: <key>. /health, /ready,
+  # and /metrics are always open. Leave empty for dev.
+  auth:
+    api_key: "${PGAO_API_KEY}"
 
 # Database clusters to monitor
 clusters:

@@ -28,6 +28,10 @@ func (f *fakePinger) GetAllClusters() []string                   { return f.clus
 func (f *fakePinger) PingAll(_ context.Context) map[string]error { return f.errs }
 
 func newTestHandler() (*Handler, *mux.Router) {
+	return newTestHandlerWithSecurity(SecurityOptions{})
+}
+
+func newTestHandlerWithSecurity(sec SecurityOptions) (*Handler, *mux.Router) {
 	log := logrus.New()
 	log.SetOutput(io.Discard)
 	pool := db.NewConnectionPool(log)
@@ -37,7 +41,7 @@ func newTestHandler() (*Handler, *mux.Router) {
 	mc := collector.NewMetricsCollector(pool, log, 0)
 	cc := collector.NewClusterCollector(pool, log, 0)
 
-	h := NewHandler(pool, qa, pa, mc, cc, log)
+	h := NewHandler(pool, qa, pa, mc, cc, log).WithSecurity(sec)
 	r := mux.NewRouter()
 	h.RegisterRoutes(r)
 	return h, r
@@ -261,6 +265,80 @@ func TestGetTableMetricsReturns500WhenClusterUnknown(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 for unknown cluster, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthEnabledRejectsApiV1WithoutToken(t *testing.T) {
+	_, r := newTestHandlerWithSecurity(SecurityOptions{APIKey: "sekret"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without token, got %d", w.Code)
+	}
+}
+
+func TestAuthEnabledLetsThroughWithBearerToken(t *testing.T) {
+	_, r := newTestHandlerWithSecurity(SecurityOptions{APIKey: "sekret"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters", nil)
+	req.Header.Set("Authorization", "Bearer sekret")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 with valid token, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthDoesNotGateHealthReadyOrMetrics(t *testing.T) {
+	_, r := newTestHandlerWithSecurity(SecurityOptions{APIKey: "sekret"})
+
+	for _, path := range []string{"/health", "/metrics"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code == http.StatusUnauthorized {
+			t.Errorf("%s must stay un-authenticated, got 401", path)
+		}
+	}
+}
+
+func TestAnalyzeQueryRejectsOversizedBody(t *testing.T) {
+	_, r := newTestHandlerWithSecurity(SecurityOptions{MaxBodyBytes: 16})
+
+	oversized := strings.Repeat("A", 1024)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/analyze", strings.NewReader(oversized))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// JSON decoder returns 400 once it tries to read past the limit, plus
+	// MaxBytesReader may set 413 directly. Both mean the body was rejected.
+	if w.Code != http.StatusRequestEntityTooLarge && w.Code != http.StatusBadRequest {
+		t.Errorf("expected 413 or 400 for oversized body, got %d", w.Code)
+	}
+}
+
+func TestInternalErrorsDoNotLeakRawDetails(t *testing.T) {
+	// /api/v1/clusters/nonexistent/metrics triggers an internal error (no
+	// cluster registered). We want "internal server error", NOT the raw
+	// collector error.
+	_, r := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/nonexistent/metrics", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "internal server error") {
+		t.Errorf("expected generic error, got %s", body)
+	}
+	if strings.Contains(body, "failed to collect") || strings.Contains(body, "connection") {
+		t.Errorf("response leaked internal error detail: %s", body)
 	}
 }
 

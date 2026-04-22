@@ -69,6 +69,25 @@ main() {
   [ "$code" = "400" ] || fail "empty body should return 400, got $code"
   pass "analyze rejects empty body"
 
+  echo "--- POST /api/v1/analyze (oversized body) ---"
+  # Fire a 2 MiB body past the default 1 MiB cap.
+  big="$(head -c 2097152 /dev/zero | tr '\0' A)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    -H 'Content-Type: application/json' \
+    --data-binary "{\"query\":\"$big\"}" "$HOST/api/v1/analyze")"
+  case "$code" in
+    413|400) pass "oversized body rejected -> $code" ;;
+    *) fail "oversized body should be rejected (413/400), got $code" ;;
+  esac
+
+  echo "--- GET /api/v1/clusters/nonexistent/metrics (internal error sanitisation) ---"
+  body="$(curl -s "$HOST/api/v1/clusters/nonexistent/metrics" || true)"
+  echo "$body" | grep -q '"error":"internal server error"' \
+    || fail "unknown-cluster error must be generic, got: $body"
+  echo "$body" | grep -qiE 'connection|failed to' \
+    && fail "internal error leaked implementation detail: $body"
+  pass "internal errors surface as generic message"
+
   echo "--- GET /api/v1/clusters/integration-test/queries ---"
   queries="$(curl -sf "$HOST/api/v1/clusters/integration-test/queries?limit=5&order_by=total_exec_time")"
   echo "$queries" | grep -q '\[' \
