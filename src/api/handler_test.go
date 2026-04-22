@@ -218,6 +218,52 @@ func TestListClustersReturnsEmptyWhenNoneRegistered(t *testing.T) {
 	}
 }
 
+func TestParseLimit(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"100", 100},
+		{"0", 0},
+		{"abc", 0},
+		{"-5", 0},
+		{"10000", 10000}, // caller applies upper cap
+	}
+	for _, c := range cases {
+		if got := parseLimit(c.in); got != c.want {
+			t.Errorf("parseLimit(%q)=%d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestGetSlowQueriesReturns500WhenClusterUnknown(t *testing.T) {
+	// With no registered cluster the collector surfaces "cluster not found",
+	// which is not a precondition failure — we want 500, not 412, so operators
+	// can distinguish missing-cluster from missing-extension.
+	_, r := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/unknown/queries", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for unknown cluster, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestGetTableMetricsReturns500WhenClusterUnknown(t *testing.T) {
+	_, r := newTestHandler()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/clusters/unknown/tables?limit=50", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for unknown cluster, got %d (body=%s)", w.Code, w.Body.String())
+	}
+}
+
 func TestMetricsEndpointServesPromText(t *testing.T) {
 	_, r := newTestHandler()
 
