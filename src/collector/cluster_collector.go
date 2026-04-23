@@ -9,25 +9,37 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/db"
 	"github.com/zvdy/pgao/src/models"
+	"golang.org/x/sync/errgroup"
 )
 
 // ClusterCollector collects cluster information and status
 type ClusterCollector struct {
-	pool     *db.ConnectionPool
-	log      *logrus.Logger
-	mu       sync.RWMutex
-	clusters map[string]*models.Cluster
-	interval time.Duration
+	pool         *db.ConnectionPool
+	log          *logrus.Logger
+	mu           sync.RWMutex
+	clusters     map[string]*models.Cluster
+	interval     time.Duration
+	queryTimeout time.Duration
 }
 
 // NewClusterCollector creates a new ClusterCollector instance
 func NewClusterCollector(pool *db.ConnectionPool, log *logrus.Logger, interval time.Duration) *ClusterCollector {
 	return &ClusterCollector{
-		pool:     pool,
-		log:      log,
-		clusters: make(map[string]*models.Cluster),
-		interval: interval,
+		pool:         pool,
+		log:          log,
+		clusters:     make(map[string]*models.Cluster),
+		interval:     interval,
+		queryTimeout: 10 * time.Second,
 	}
+}
+
+// WithQueryTimeout caps each per-cluster info-collection round at d so a
+// slow Postgres can't stall the rest of the fleet.
+func (cc *ClusterCollector) WithQueryTimeout(d time.Duration) *ClusterCollector {
+	if d > 0 {
+		cc.queryTimeout = d
+	}
+	return cc
 }
 
 // Start begins collecting cluster information
@@ -51,15 +63,29 @@ func (cc *ClusterCollector) Start(ctx context.Context) {
 	}
 }
 
-// collectAllClusters collects information for all registered clusters
+// collectAllClusters fans out one goroutine per cluster so a slow Postgres
+// in cluster A cannot delay info collection from clusters B and C. Each
+// per-cluster context is bounded by cc.queryTimeout.
 func (cc *ClusterCollector) collectAllClusters(ctx context.Context) {
 	clusterIDs := cc.pool.GetAllClusters()
-
-	for _, clusterID := range clusterIDs {
-		if err := cc.CollectClusterInfo(ctx, clusterID); err != nil {
-			cc.log.Errorf("Failed to collect info for cluster %s: %v", clusterID, err)
-		}
+	if len(clusterIDs) == 0 {
+		return
 	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(len(clusterIDs))
+	for _, clusterID := range clusterIDs {
+		clusterID := clusterID
+		g.Go(func() error {
+			cctx, cancel := context.WithTimeout(gctx, cc.queryTimeout)
+			defer cancel()
+			if err := cc.CollectClusterInfo(cctx, clusterID); err != nil {
+				cc.log.WithError(err).WithField("cluster_id", clusterID).Error("collect cluster info failed")
+			}
+			return nil
+		})
+	}
+	_ = g.Wait()
 }
 
 // CollectClusterInfo collects information about a specific cluster

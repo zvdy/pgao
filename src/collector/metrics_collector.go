@@ -12,6 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/zvdy/pgao/src/db"
 	"github.com/zvdy/pgao/src/models"
+	"golang.org/x/sync/errgroup"
 )
 
 // ErrPgStatStatementsMissing is returned by CollectQueryMetrics when the
@@ -22,11 +23,12 @@ var ErrPgStatStatementsMissing = errors.New("pg_stat_statements extension not in
 
 // MetricsCollector gathers performance metrics from PostgreSQL clusters.
 type MetricsCollector struct {
-	pool     *db.ConnectionPool
-	log      *logrus.Logger
-	interval time.Duration
-	rates    *rateCache
-	now      func() time.Time
+	pool         *db.ConnectionPool
+	log          *logrus.Logger
+	interval     time.Duration
+	queryTimeout time.Duration
+	rates        *rateCache
+	now          func() time.Time
 
 	mu     sync.RWMutex
 	latest map[string]*models.Metrics
@@ -34,13 +36,24 @@ type MetricsCollector struct {
 
 func NewMetricsCollector(pool *db.ConnectionPool, log *logrus.Logger, interval time.Duration) *MetricsCollector {
 	return &MetricsCollector{
-		pool:     pool,
-		log:      log,
-		interval: interval,
-		rates:    newRateCache(),
-		now:      time.Now,
-		latest:   make(map[string]*models.Metrics),
+		pool:         pool,
+		log:          log,
+		interval:     interval,
+		queryTimeout: 10 * time.Second,
+		rates:        newRateCache(),
+		now:          time.Now,
+		latest:       make(map[string]*models.Metrics),
 	}
+}
+
+// WithQueryTimeout caps each per-cluster collection round at d. A slow or
+// hung Postgres won't stall the rest of the fleet — its own goroutine
+// cancels at d.
+func (mc *MetricsCollector) WithQueryTimeout(d time.Duration) *MetricsCollector {
+	if d > 0 {
+		mc.queryTimeout = d
+	}
+	return mc
 }
 
 // LatestMetrics returns a snapshot of the most recent per-cluster metrics.
@@ -79,15 +92,29 @@ func (mc *MetricsCollector) Start(ctx context.Context) {
 	}
 }
 
-// collectAllMetrics collects metrics for all registered clusters
+// collectAllMetrics fans out one goroutine per cluster so a slow Postgres in
+// cluster A cannot delay collection from clusters B and C. Each per-cluster
+// context is bounded by mc.queryTimeout.
 func (mc *MetricsCollector) collectAllMetrics(ctx context.Context) {
 	clusters := mc.pool.GetAllClusters()
-
-	for _, clusterID := range clusters {
-		if _, err := mc.CollectClusterMetrics(ctx, clusterID); err != nil {
-			mc.log.Errorf("Failed to collect metrics for cluster %s: %v", clusterID, err)
-		}
+	if len(clusters) == 0 {
+		return
 	}
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(len(clusters))
+	for _, clusterID := range clusters {
+		clusterID := clusterID
+		g.Go(func() error {
+			cctx, cancel := context.WithTimeout(gctx, mc.queryTimeout)
+			defer cancel()
+			if _, err := mc.CollectClusterMetrics(cctx, clusterID); err != nil {
+				mc.log.WithError(err).WithField("cluster_id", clusterID).Error("collect metrics failed")
+			}
+			return nil // never propagate per-cluster errors; they are logged
+		})
+	}
+	_ = g.Wait()
 }
 
 // CollectClusterMetrics collects metrics for a specific cluster and returns them
