@@ -1,0 +1,49 @@
+pgao {{ .Chart.AppVersion }} deployed as {{ include "pgao.fullname" . }}.
+
+API and /metrics:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "pgao.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://127.0.0.1:{{ .Values.service.port }}/health
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  kubectl get svc -n {{ .Release.Namespace }} {{ include "pgao.fullname" . }}
+{{- else if eq .Values.service.type "NodePort" }}
+  kubectl get svc -n {{ .Release.Namespace }} {{ include "pgao.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}'
+{{- end }}
+
+{{- if .Values.auth.enabled }}
+
+API key authentication is ENABLED. /api/v1/* requires:
+  Authorization: Bearer <key>     OR     X-API-Key: <key>
+
+The key is read from secret {{ include "pgao.authSecretName" . }} (key: {{ .Values.auth.secretKey }}).
+{{- else }}
+
+WARNING: API key authentication is DISABLED. /api/v1/* is open to any
+caller that can reach the Service. Set auth.enabled=true and
+auth.existingSecret in production.
+{{- end }}
+
+{{- if .Values.serviceMonitor.enabled }}
+
+A ServiceMonitor was created. Prometheus-operator will scrape /metrics.
+{{- else }}
+
+ServiceMonitor disabled. Scrape /metrics directly:
+  - job_name: pgao
+    kubernetes_sd_configs:
+      - role: service
+        namespaces:
+          names: [{{ .Release.Namespace }}]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_service_name]
+        action: keep
+        regex: {{ include "pgao.fullname" . }}
+{{- end }}
+
+Configured clusters: {{ len .Values.clusters }}
+{{- if eq (len .Values.clusters) 0 }}
+
+WARNING: No clusters configured. pgao will start but /ready will return 503
+until at least one cluster is added. Pass --set clusters[0]... or supply a
+values file.
+{{- end }}

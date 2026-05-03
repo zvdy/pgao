@@ -1,0 +1,60 @@
+{{/*
+config.yaml is rendered from .Values.config + .Values.clusters. Per-cluster
+passwords come from k8s Secrets, never inlined here. The deployment mounts
+this ConfigMap at /etc/pgao/config.yaml and sets CONFIG_PATH so pgao reads
+it on startup.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pgao.fullname" . }}-config
+  labels: {{- include "pgao.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    server:
+      host: {{ .Values.config.server.host | quote }}
+      port: {{ .Values.config.server.port }}
+      read_timeout: {{ .Values.config.server.read_timeout | quote }}
+      write_timeout: {{ .Values.config.server.write_timeout | quote }}
+      idle_timeout: {{ .Values.config.server.idle_timeout | quote }}
+      request_timeout: {{ .Values.config.server.request_timeout | quote }}
+      max_body_bytes: {{ .Values.config.server.max_body_bytes }}
+      rate_limit_rps: {{ .Values.config.server.rate_limit_rps }}
+      rate_limit_burst: {{ .Values.config.server.rate_limit_burst }}
+      {{- if .Values.auth.enabled }}
+      auth:
+        # The actual key is loaded from PGAO_API_KEY (set in the
+        # Deployment's env from the secret); leaving this blank keeps
+        # config.yaml free of credentials.
+        api_key: ""
+      {{- end }}
+    logging:
+      level: {{ .Values.config.logging.level | quote }}
+      format: {{ .Values.config.logging.format | quote }}
+      output: {{ .Values.config.logging.output | quote }}
+    metrics:
+      collection_interval: {{ .Values.config.metrics.collection_interval | quote }}
+      retention_days: {{ .Values.config.metrics.retention_days }}
+      enable_prometheus: {{ .Values.config.metrics.enable_prometheus }}
+      prometheus_port: {{ .Values.config.metrics.prometheus_port }}
+      query_timeout: {{ .Values.config.metrics.query_timeout | quote }}
+      health_check_interval: {{ .Values.config.metrics.health_check_interval | quote }}
+    clusters:
+      {{- range $i, $c := .Values.clusters }}
+      - id: {{ required (printf "clusters[%d].id is required" $i) $c.id | quote }}
+        name: {{ default $c.id $c.name | quote }}
+        host: {{ required (printf "clusters[%d].host is required" $i) $c.host | quote }}
+        port: {{ default $.Values.clusterDefaults.port $c.port }}
+        user: {{ required (printf "clusters[%d].user is required" $i) $c.user | quote }}
+        # Password is injected at runtime via env-var expansion in
+        # config.yaml. The Deployment exports PGAO_PG_PASSWORD_<id> from
+        # the per-cluster secret, and pgao expands ${...} on load.
+        password: {{ printf "${PGAO_PG_PASSWORD_%s}" (upper (replace "-" "_" $c.id)) | quote }}
+        database: {{ default "postgres" $c.database | quote }}
+        ssl_mode: {{ default $.Values.clusterDefaults.ssl_mode $c.ssl_mode | quote }}
+        max_connections: {{ default $.Values.clusterDefaults.max_connections $c.max_connections }}
+        min_connections: {{ default $.Values.clusterDefaults.min_connections $c.min_connections }}
+        conn_max_lifetime: {{ default $.Values.clusterDefaults.conn_max_lifetime $c.conn_max_lifetime | quote }}
+        conn_max_idle_time: {{ default $.Values.clusterDefaults.conn_max_idle_time $c.conn_max_idle_time | quote }}
+        statement_timeout: {{ default $.Values.clusterDefaults.statement_timeout $c.statement_timeout | quote }}
+      {{- end }}

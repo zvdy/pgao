@@ -43,21 +43,26 @@ type AuthConfig struct {
 
 // ClusterConfig represents a PostgreSQL cluster configuration
 type ClusterConfig struct {
-	ID              string            `yaml:"id"`
-	Name            string            `yaml:"name"`
-	Host            string            `yaml:"host"`
-	Port            int               `yaml:"port"`
-	User            string            `yaml:"user"`
-	Password        string            `yaml:"password"`
-	Database        string            `yaml:"database"`
-	SSLMode         string            `yaml:"ssl_mode"`
-	MaxConnections  int               `yaml:"max_connections"`
-	MinConnections  int               `yaml:"min_connections"`
-	ConnMaxLifetime time.Duration     `yaml:"conn_max_lifetime"`
-	ConnMaxIdleTime time.Duration     `yaml:"conn_max_idle_time"`
-	Region          string            `yaml:"region"`
-	Environment     string            `yaml:"environment"`
-	Tags            map[string]string `yaml:"tags"`
+	ID              string        `yaml:"id"`
+	Name            string        `yaml:"name"`
+	Host            string        `yaml:"host"`
+	Port            int           `yaml:"port"`
+	User            string        `yaml:"user"`
+	Password        string        `yaml:"password"`
+	Database        string        `yaml:"database"`
+	SSLMode         string        `yaml:"ssl_mode"`
+	MaxConnections  int           `yaml:"max_connections"`
+	MinConnections  int           `yaml:"min_connections"`
+	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `yaml:"conn_max_idle_time"`
+	// StatementTimeout caps the longest single SQL statement pgao will
+	// run on this cluster. Translated to a per-session
+	// `SET statement_timeout` so a hung query doesn't block the
+	// collection round past metrics.query_timeout. Zero = disabled.
+	StatementTimeout time.Duration     `yaml:"statement_timeout"`
+	Region           string            `yaml:"region"`
+	Environment      string            `yaml:"environment"`
+	Tags             map[string]string `yaml:"tags"`
 }
 
 // LoggingConfig represents logging configuration

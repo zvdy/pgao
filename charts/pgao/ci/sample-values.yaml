@@ -1,0 +1,36 @@
+# Values used by `helm lint` + `helm template` in CI. Mirrors the
+# minimum a real deployment needs.
+
+clusters:
+  - id: ci
+    name: CI cluster
+    host: postgres.example.com
+    user: pgao_monitor
+    database: postgres
+    existingPasswordSecret: ci-pg-credentials
+    passwordSecretKey: password
+
+auth:
+  enabled: true
+  existingSecret: ci-pgao-auth
+  secretKey: api-key
+
+serviceMonitor:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: pgao.ci.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
