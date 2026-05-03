@@ -6,6 +6,12 @@
 
 Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_go](https://github.com/pganalyze/pg_query_go), multi-cluster support, REST API.
 
+## Documentation
+
+- [API contract](api/openapi.yaml) — OpenAPI 3.1 spec for every HTTP endpoint
+- [Architecture](docs/architecture.md) — components, data flow, sidecar vs extension
+- [Operator runbook](docs/runbook.md) — symptom-first guide for production incidents
+
 ## Quick Start
 
 ```bash

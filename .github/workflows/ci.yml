@@ -108,6 +108,24 @@ jobs:
           path: coverage.out
           retention-days: 7
 
+  validate-openapi:
+    name: Validate OpenAPI spec
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Redocly CLI
+        run: npm install -g @redocly/cli@^1
+
+      - name: Lint api/openapi.yaml
+        run: redocly lint api/openapi.yaml
+
   lint-terraform:
     name: Lint Terraform Code
     runs-on: ubuntu-latest
