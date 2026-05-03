@@ -1,0 +1,485 @@
+openapi: 3.1.0
+info:
+  title: pgao API
+  description: |
+    pgao (PostgreSQL Analytics Observer) HTTP API.
+
+    The `/api/v1/*` surface returns metrics, queries, table statistics, and
+    alerts for every registered PostgreSQL cluster. Auth is gated by a static
+    bearer / `X-API-Key` token when `server.auth.api_key` is configured;
+    `/health`, `/ready`, and `/metrics` are always unauthenticated so
+    Kubernetes probes and Prometheus scrapers keep working.
+
+    See `docs/runbook.md` for operator playbooks (cluster goes unhealthy,
+    `412` from `/queries`, etc.) and `docs/architecture.md` for the
+    sidecar-vs-extension deployment story.
+  version: 0.1.0
+  license:
+    name: Apache-2.0
+    url: https://github.com/zvdy/pgao/blob/main/LICENSE
+servers:
+  - url: http://localhost:8080
+    description: Local dev / kind
+tags:
+  - name: probes
+    description: Liveness, readiness, Prometheus
+  - name: clusters
+    description: Per-cluster info, metrics, health, alerts
+  - name: queries
+    description: Slow-query and table inspection (requires pg_stat_statements)
+  - name: analyze
+    description: Standalone SQL analysis
+
+security:
+  - bearerAuth: []
+  - apiKeyAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [probes]
+      operationId: getHealth
+      summary: Liveness probe
+      description: Always returns 200 once the process is up.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+
+  /ready:
+    get:
+      tags: [probes]
+      operationId: getReady
+      summary: Readiness probe
+      description: |
+        Returns 200 when at least one registered cluster is healthy.
+        503 when no clusters are registered or all are unhealthy.
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Readiness'
+
+  /metrics:
+    get:
+      tags: [probes]
+      operationId: getMetrics
+      summary: Prometheus exposition
+      description: |
+        Prometheus text-format exposition with `pgao_*` per-cluster gauges,
+        Go runtime metrics, and pgao runtime instrumentation
+        (collection duration / errors, HTTP request count / latency).
+      security: []
+      responses:
+        '200':
+          description: Prometheus exposition
+          content:
+            text/plain: { schema: { type: string } }
+
+  /api/v1/clusters:
+    get:
+      tags: [clusters]
+      operationId: listClusters
+      summary: List registered clusters
+      responses:
+        '200':
+          description: Cluster list
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Cluster' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/v1/clusters/{id}:
+    get:
+      tags: [clusters]
+      operationId: getCluster
+      summary: Get one cluster (incl. PostgreSQL version, databases, replication, extensions)
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+      responses:
+        '200':
+          description: Cluster details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Cluster' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/clusters/{id}/metrics:
+    get:
+      tags: [clusters]
+      operationId: getClusterMetrics
+      summary: Latest metrics snapshot for the cluster
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+      responses:
+        '200':
+          description: Metrics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Metrics' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/clusters/{id}/health:
+    get:
+      tags: [clusters]
+      operationId: getClusterHealth
+      summary: Cluster health summary (score + active checks)
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+      responses:
+        '200':
+          description: Health
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthStatus' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/clusters/{id}/alerts:
+    get:
+      tags: [clusters]
+      operationId: getClusterAlerts
+      summary: Active alerts derived from the latest metrics sample
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+      responses:
+        '200':
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Alert' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/clusters/{id}/queries:
+    get:
+      tags: [queries]
+      operationId: getSlowQueries
+      summary: Top slow queries from pg_stat_statements
+      description: |
+        Requires the `pg_stat_statements` extension on the target cluster.
+        Returns 412 when the extension is missing, with a message that
+        includes the `CREATE EXTENSION pg_stat_statements` hint.
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+        - in: query
+          name: limit
+          description: Max rows to return (clamped to 1..500). Default 100.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: order_by
+          description: Column to sort by (DESC).
+          schema:
+            type: string
+            enum: [mean_exec_time, total_exec_time, calls]
+            default: mean_exec_time
+        - in: query
+          name: database
+          description: Database label applied to results (informational only).
+          schema: { type: string }
+      responses:
+        '200':
+          description: Query metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/QueryMetrics' }
+        '412':
+          description: pg_stat_statements not installed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/clusters/{id}/tables:
+    get:
+      tags: [queries]
+      operationId: getTableMetrics
+      summary: Top tables by scan activity from pg_stat_user_tables
+      parameters:
+        - $ref: '#/components/parameters/ClusterID'
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+        - in: query
+          name: database
+          schema: { type: string }
+      responses:
+        '200':
+          description: Table metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TableMetrics' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/v1/analyze:
+    post:
+      tags: [analyze]
+      operationId: analyzeQuery
+      summary: Statically analyse a SQL query (no execution against any cluster)
+      description: |
+        Uses libpg_query under the hood. Returns an analysis with parsed
+        tables, joins, aggregates, complexity score, and suggestions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  description: SQL text to analyse
+                  example: SELECT id, name FROM users WHERE id = 1
+      responses:
+        '200':
+          description: Analysis
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QueryAnalysis' }
+        '400':
+          description: Empty query, invalid JSON, or oversized body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: Body exceeds server.max_body_bytes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  parameters:
+    ClusterID:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: Cluster identifier from `clusters[].id` in config.yaml
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer / X-API-Key header
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Cluster not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Process-wide token bucket exhausted
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Internal:
+      description: Generic 500. Operator must check pgao logs for details.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+
+    Readiness:
+      type: object
+      required: [status, healthy, total, clusters]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        healthy: { type: integer }
+        total: { type: integer }
+        reason: { type: string }
+        clusters:
+          type: object
+          additionalProperties: { type: string }
+
+    Cluster:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        status: { type: string }
+        configuration:
+          type: object
+          additionalProperties: true
+        metrics:
+          type: object
+          additionalProperties: { type: number }
+
+    Metrics:
+      type: object
+      properties:
+        cluster_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        connections_active: { type: integer }
+        connections_total: { type: integer }
+        transactions_per_sec: { type: number }
+        cache_hit_ratio: { type: number }
+        disk_io_read: { type: number }
+        disk_io_write: { type: number }
+        cpu_usage: { type: number }
+        memory_usage: { type: number }
+        lock_waits: { type: integer }
+        deadlock_count: { type: integer }
+        replication_lag_ms: { type: integer }
+        table_bloat_pct: { type: number }
+        index_size_bytes: { type: integer }
+        table_size_bytes: { type: integer }
+
+    QueryMetrics:
+      type: object
+      properties:
+        query_id: { type: string }
+        query: { type: string }
+        cluster_id: { type: string }
+        database: { type: string }
+        execution_time_ms: { type: number }
+        planning_time_ms: { type: number }
+        rows_returned: { type: integer }
+        rows_affected: { type: integer }
+        shared_blocks_hit: { type: integer }
+        shared_blocks_read: { type: integer }
+        temp_blocks_read: { type: integer }
+        temp_blocks_written: { type: integer }
+        timestamp: { type: string, format: date-time }
+        call_count: { type: integer }
+        mean_exec_time_ms: { type: number }
+        stddev_exec_time_ms: { type: number }
+
+    TableMetrics:
+      type: object
+      properties:
+        cluster_id: { type: string }
+        database: { type: string }
+        schema: { type: string }
+        table: { type: string }
+        seq_scan: { type: integer }
+        seq_tup_read: { type: integer }
+        idx_scan: { type: integer }
+        idx_tup_fetch: { type: integer }
+        tup_inserted: { type: integer }
+        tup_updated: { type: integer }
+        tup_deleted: { type: integer }
+        tup_hot_updated: { type: integer }
+        live_tuples: { type: integer }
+        dead_tuples: { type: integer }
+        vacuum_count: { type: integer }
+        autovacuum_count: { type: integer }
+        analyze_count: { type: integer }
+        last_vacuum: { type: [string, 'null'], format: date-time }
+        last_autovacuum: { type: [string, 'null'], format: date-time }
+        last_analyze: { type: [string, 'null'], format: date-time }
+        timestamp: { type: string, format: date-time }
+
+    Alert:
+      type: object
+      properties:
+        id: { type: string }
+        type: { type: string }
+        severity:
+          type: string
+          enum: [critical, high, medium, low, info]
+        cluster_id: { type: string }
+        title: { type: string }
+        description: { type: string }
+        metric: { type: string }
+        threshold: { type: number }
+        current_value: { type: number }
+        timestamp: { type: string, format: date-time }
+        status: { type: string, enum: [active, acknowledged, resolved] }
+        actions:
+          type: array
+          items: { type: string }
+
+    HealthStatus:
+      type: object
+      properties:
+        cluster_id: { type: string }
+        status: { type: string, enum: [healthy, warning, critical, unknown] }
+        score: { type: integer, minimum: 0, maximum: 100 }
+        active_alerts: { type: integer }
+        critical_alerts: { type: integer }
+        last_check: { type: string, format: date-time }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              status: { type: string }
+              message: { type: string }
+
+    QueryAnalysis:
+      type: object
+      properties:
+        query: { type: string }
+        normalized: { type: string }
+        query_type: { type: string }
+        tables: { type: array, items: { type: string } }
+        indexes_used: { type: array, items: { type: string } }
+        columns: { type: array, items: { type: string } }
+        has_subquery: { type: boolean }
+        has_join: { type: boolean }
+        join_type: { type: string }
+        has_aggregate: { type: boolean }
+        has_window_function: { type: boolean }
+        complexity: { type: string }
+        estimated_cost: { type: number }
+        suggestions:
+          type: array
+          items:
+            type: object
+            properties:
+              type: { type: string }
+              severity: { type: string }
+              message: { type: string }
+              impact: { type: string }
+              confidence: { type: number }
+              recommended: { type: string }
+        warnings: { type: array, items: { type: string } }
+        timestamp: { type: string, format: date-time }
