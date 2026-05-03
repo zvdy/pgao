@@ -373,7 +373,7 @@ func (cp *ConnectionPool) RemoveCluster(clusterID string) error {
 	pool.Close()
 	delete(cp.pools, clusterID)
 	cp.status.remove(clusterID)
-	cp.log.Infof("Removed cluster %s from pool", clusterID)
+	cp.log.WithField("cluster_id", clusterID).Info("removed cluster from pool")
 
 	return nil
 }
@@ -385,7 +385,7 @@ func (cp *ConnectionPool) Close() {
 
 	for clusterID, pool := range cp.pools {
 		pool.Close()
-		cp.log.Infof("Closed connection pool for cluster %s", clusterID)
+		cp.log.WithField("cluster_id", clusterID).Info("closed connection pool")
 	}
 
 	cp.pools = make(map[string]*pgxpool.Pool)

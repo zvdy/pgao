@@ -36,6 +36,7 @@ type Handler struct {
 	log                 *logrus.Logger
 	promRegistry        prometheus.Gatherer
 	sec                 SecurityOptions
+	httpInstr           HTTPInstrumentationProvider
 }
 
 // SecurityOptions controls the middleware applied to /api/v1/*. Zero value
@@ -95,6 +96,19 @@ func (h *Handler) WithSecurity(opts SecurityOptions) *Handler {
 	return h
 }
 
+// HTTPInstrumentationProvider supplies a mux middleware that records HTTP
+// request count + latency. metrics.HTTPInstrumentation satisfies it.
+type HTTPInstrumentationProvider interface {
+	Middleware() mux.MiddlewareFunc
+}
+
+// WithHTTPInstrumentation wires per-request metrics. Must be called before
+// RegisterRoutes; later calls have no effect.
+func (h *Handler) WithHTTPInstrumentation(p HTTPInstrumentationProvider) *Handler {
+	h.httpInstr = p
+	return h
+}
+
 // RegisterRoutes registers all API routes. /health, /ready, and /metrics are
 // never wrapped in auth/timeout/rate-limit middleware so k8s probes and
 // Prometheus scrapes keep working even if the caller has no API key.
@@ -126,14 +140,20 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	}
 
 	api := r.PathPrefix("/api/v1").Subrouter()
-	api.Use(
+	mws := []mux.MiddlewareFunc{
 		muxMiddleware(rec),
 		muxMiddleware(reqLog),
+	}
+	if h.httpInstr != nil {
+		mws = append(mws, h.httpInstr.Middleware())
+	}
+	mws = append(mws,
 		muxMiddleware(rateLimit(h.sec.RateLimitRPS, h.sec.RateLimitBurst)),
 		muxMiddleware(timeout(reqTimeout)),
 		muxMiddleware(maxBody(maxBytes)),
 		muxMiddleware(apiKeyAuth(h.sec.APIKey)),
 	)
+	api.Use(mws...)
 	api.HandleFunc("/clusters", h.ListClusters).Methods("GET")
 	api.HandleFunc("/clusters/{id}", h.GetCluster).Methods("GET")
 	api.HandleFunc("/clusters/{id}/metrics", h.GetClusterMetrics).Methods("GET")

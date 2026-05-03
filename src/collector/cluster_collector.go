@@ -20,6 +20,14 @@ type ClusterCollector struct {
 	clusters     map[string]*models.Cluster
 	interval     time.Duration
 	queryTimeout time.Duration
+	observer     CollectionObserver
+}
+
+// WithObserver wires a CollectionObserver. Each per-cluster info-collection
+// round records its duration and a non-nil error if collection failed.
+func (cc *ClusterCollector) WithObserver(o CollectionObserver) *ClusterCollector {
+	cc.observer = o
+	return cc
 }
 
 // NewClusterCollector creates a new ClusterCollector instance
@@ -79,8 +87,17 @@ func (cc *ClusterCollector) collectAllClusters(ctx context.Context) {
 		g.Go(func() error {
 			cctx, cancel := context.WithTimeout(gctx, cc.queryTimeout)
 			defer cancel()
-			if err := cc.CollectClusterInfo(cctx, clusterID); err != nil {
-				cc.log.WithError(err).WithField("cluster_id", clusterID).Error("collect cluster info failed")
+			start := time.Now()
+			err := cc.CollectClusterInfo(cctx, clusterID)
+			took := time.Since(start)
+			if cc.observer != nil {
+				cc.observer.ObserveCollection(clusterID, "cluster_info", took, err)
+			}
+			if err != nil {
+				cc.log.WithError(err).WithFields(logrus.Fields{
+					"cluster_id": clusterID,
+					"took":       took,
+				}).Error("collect cluster info failed")
 			}
 			return nil
 		})
@@ -105,7 +122,7 @@ func (cc *ClusterCollector) CollectClusterInfo(ctx context.Context, clusterID st
 	// Check cluster health
 	if err := cc.pool.HealthCheck(clusterID); err != nil {
 		cluster.UpdateStatus("unhealthy")
-		cc.log.Warnf("Cluster %s is unhealthy: %v", clusterID, err)
+		cc.log.WithError(err).WithField("cluster_id", clusterID).Warn("cluster is unhealthy")
 		return err
 	}
 
@@ -141,7 +158,7 @@ func (cc *ClusterCollector) CollectClusterInfo(ctx context.Context, clusterID st
 		cluster.Configuration["extensions"] = extensions
 	}
 
-	cc.log.Debugf("Collected cluster info for %s", clusterID)
+	cc.log.WithField("cluster_id", clusterID).Debug("collected cluster info")
 	return nil
 }
 
@@ -359,7 +376,7 @@ func (cc *ClusterCollector) RegisterCluster(cluster *models.Cluster) {
 	cc.mu.Lock()
 	cc.clusters[cluster.ID] = cluster
 	cc.mu.Unlock()
-	cc.log.Infof("Registered cluster %s for monitoring", cluster.ID)
+	cc.log.WithField("cluster_id", cluster.ID).Info("registered cluster for monitoring")
 }
 
 // UnregisterCluster removes a cluster from monitoring
@@ -372,6 +389,6 @@ func (cc *ClusterCollector) UnregisterCluster(clusterID string) error {
 	}
 
 	delete(cc.clusters, clusterID)
-	cc.log.Infof("Unregistered cluster %s from monitoring", clusterID)
+	cc.log.WithField("cluster_id", clusterID).Info("unregistered cluster from monitoring")
 	return nil
 }
