@@ -1,52 +1,57 @@
+version: "2"
+
 run:
   timeout: 5m
   tests: true
-  go: "1.23"
+  go: "1.25"
 
 linters:
-  disable-all: true
+  default: none
   enable:
+    - bodyclose
     - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - gosimple
     - gocyclo
     - gosec
+    - govet
+    - ineffassign
     - misspell
-    - revive
-    - unconvert
-    - goimports
-    - bodyclose
     - nolintlint
-
-linters-settings:
-  gocyclo:
-    min-complexity: 18
-  gosec:
-    excludes:
-      - G104
-      - G404
-  revive:
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  exclusions:
+    paths:
+      - bin
+      - terraform
+      - scripts
     rules:
-      - name: exported
-        disabled: true
-      - name: package-comments
-        disabled: true
-  staticcheck:
-    checks: ["all", "-ST1000", "-ST1003"]
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gocyclo
+          - gosec
+  settings:
+    gocyclo:
+      min-complexity: 18
+    gosec:
+      excludes:
+        - G104
+        - G304   # config path comes from CONFIG_PATH / a default, not user input
+        - G404
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+    staticcheck:
+      checks: ["all", "-ST1000", "-ST1003"]
+
+formatters:
+  enable:
+    - goimports
 
 issues:
-  exclude-dirs:
-    - bin
-    - terraform
-    - scripts
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
-        - gocyclo
   max-issues-per-linter: 0
   max-same-issues: 0

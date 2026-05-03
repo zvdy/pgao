@@ -20,7 +20,7 @@ GOFMT=$(GOCMD) fmt
 LDFLAGS=-ldflags "-w -s"
 
 # Tooling (pinned — keep in sync with .github/workflows/ci.yml)
-GOLANGCI_LINT_VERSION?=v1.64.8
+GOLANGCI_LINT_VERSION?=v2.5.0
 TOOLS_BIN?=$(CURDIR)/bin/tools
 GOLANGCI_LINT=$(TOOLS_BIN)/golangci-lint
 
