@@ -17,12 +17,13 @@ RUN go mod download
 
 COPY src/ ./src/
 
-# CGO_ENABLED=0 produces a static binary that runs on plain alpine
-# without libgcc / libstdc++. -trimpath strips local filesystem paths
-# so two builds from the same git ref produce byte-identical output.
+# pg_query_go links libpg_query via cgo, so CGO_ENABLED stays on. The
+# binary is dynamically linked against musl libc, which is present in
+# the alpine runtime stage below. -trimpath strips local filesystem
+# paths so two builds from the same git ref produce identical output.
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-w -s" -o /out/pgao ./src/main.go
 
 # ---- Runtime stage ------------------------------------------------------
