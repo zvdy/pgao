@@ -1,55 +1,49 @@
-# Build stage
-FROM golang:1.23-alpine AS builder
+# syntax=docker/dockerfile:1.7
+#
+# pgao runtime image. Multi-stage; produces a non-root, minor-pinned
+# Alpine image. Digest pinning happens at release time — the
+# release workflow records the resolved digest and operators are
+# encouraged to deploy by digest, not by tag.
 
-# Install build dependencies
+# ---- Build stage --------------------------------------------------------
+FROM golang:1.25-alpine3.20 AS builder
+
 RUN apk add --no-cache git make gcc musl-dev
 
-# Set working directory
 WORKDIR /build
 
-# Copy go mod files
 COPY go.mod go.sum ./
-
-# Download dependencies
 RUN go mod download
 
-# Copy source code
 COPY src/ ./src/
 
-# Build the application
-RUN go build -ldflags="-w -s" -o pgao ./src/main.go
+# CGO_ENABLED=0 produces a static binary that runs on plain alpine
+# without libgcc / libstdc++. -trimpath strips local filesystem paths
+# so two builds from the same git ref produce byte-identical output.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -trimpath -ldflags="-w -s" -o /out/pgao ./src/main.go
 
-# Runtime stage
-FROM alpine:latest
+# ---- Runtime stage ------------------------------------------------------
+FROM alpine:3.20
 
-# Install runtime dependencies
-RUN apk --no-cache add ca-certificates postgresql-client tzdata
+# tzdata + ca-certificates power TLS to Postgres and correct timestamps
+# in JSON logs. wget powers the HEALTHCHECK below. postgresql-client is
+# intentionally NOT installed: pgao talks to Postgres via pgx.
+RUN apk add --no-cache ca-certificates tzdata wget \
+ && addgroup -g 1000 pgao \
+ && adduser -D -u 1000 -G pgao pgao
 
-# Create non-root user
-RUN addgroup -g 1000 pgao && \
-    adduser -D -u 1000 -G pgao pgao
-
-# Set working directory
 WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /build/pgao .
+COPY --from=builder --chown=pgao:pgao /out/pgao /app/pgao
 
-# Copy sample config (can be overridden with volume mount)
-COPY --from=builder /build/src/config/ ./config/
+USER pgao:pgao
 
-# Change ownership
-RUN chown -R pgao:pgao /app
-
-# Switch to non-root user
-USER pgao
-
-# Expose API port
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Run the application
-ENTRYPOINT ["./pgao"]
+ENTRYPOINT ["/app/pgao"]
