@@ -6,7 +6,7 @@
 # encouraged to deploy by digest, not by tag.
 
 # ---- Build stage --------------------------------------------------------
-FROM golang:1.25-alpine3.20 AS builder
+FROM golang:1.25-alpine3.22 AS builder
 
 RUN apk add --no-cache git make gcc musl-dev
 
@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-w -s" -o /out/pgao ./src/main.go
 
 # ---- Runtime stage ------------------------------------------------------
-FROM alpine:3.20
+FROM alpine:3.22
 
 # tzdata + ca-certificates power TLS to Postgres and correct timestamps
 # in JSON logs. wget powers the HEALTHCHECK below. postgresql-client is
