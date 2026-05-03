@@ -21,6 +21,13 @@ import (
 // they need to `CREATE EXTENSION pg_stat_statements`.
 var ErrPgStatStatementsMissing = errors.New("pg_stat_statements extension not installed")
 
+// CollectionObserver receives an observation per per-cluster collection
+// round. Defined here so the collector package does not import the metrics
+// package; *metrics.CollectionInstrumentation satisfies it.
+type CollectionObserver interface {
+	ObserveCollection(cluster, kind string, took time.Duration, err error)
+}
+
 // MetricsCollector gathers performance metrics from PostgreSQL clusters.
 type MetricsCollector struct {
 	pool         *db.ConnectionPool
@@ -29,6 +36,7 @@ type MetricsCollector struct {
 	queryTimeout time.Duration
 	rates        *rateCache
 	now          func() time.Time
+	observer     CollectionObserver
 
 	mu     sync.RWMutex
 	latest map[string]*models.Metrics
@@ -53,6 +61,13 @@ func (mc *MetricsCollector) WithQueryTimeout(d time.Duration) *MetricsCollector 
 	if d > 0 {
 		mc.queryTimeout = d
 	}
+	return mc
+}
+
+// WithObserver wires a CollectionObserver. Each per-cluster collection
+// round records its duration and a non-nil error if collection failed.
+func (mc *MetricsCollector) WithObserver(o CollectionObserver) *MetricsCollector {
+	mc.observer = o
 	return mc
 }
 
@@ -108,8 +123,17 @@ func (mc *MetricsCollector) collectAllMetrics(ctx context.Context) {
 		g.Go(func() error {
 			cctx, cancel := context.WithTimeout(gctx, mc.queryTimeout)
 			defer cancel()
-			if _, err := mc.CollectClusterMetrics(cctx, clusterID); err != nil {
-				mc.log.WithError(err).WithField("cluster_id", clusterID).Error("collect metrics failed")
+			start := time.Now()
+			_, err := mc.CollectClusterMetrics(cctx, clusterID)
+			took := time.Since(start)
+			if mc.observer != nil {
+				mc.observer.ObserveCollection(clusterID, "metrics", took, err)
+			}
+			if err != nil {
+				mc.log.WithError(err).WithFields(logrus.Fields{
+					"cluster_id": clusterID,
+					"took":       took,
+				}).Error("collect metrics failed")
 			}
 			return nil // never propagate per-cluster errors; they are logged
 		})
@@ -126,43 +150,22 @@ func (mc *MetricsCollector) CollectClusterMetrics(ctx context.Context, clusterID
 		return nil, err
 	}
 
-	// Collect connection metrics
-	if err := mc.collectConnectionMetrics(ctx, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect connection metrics: %v", err)
+	logc := mc.log.WithField("cluster_id", clusterID)
+	warn := func(kind string, err error) {
+		if err != nil {
+			logc.WithField("kind", kind).WithError(err).Warn("sub-collection failed")
+		}
 	}
-
-	// Collect cache metrics
-	if err := mc.collectCacheMetrics(ctx, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect cache metrics: %v", err)
-	}
-
-	// Collect transaction metrics
-	if err := mc.collectTransactionMetrics(ctx, clusterID, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect transaction metrics: %v", err)
-	}
-
-	// Collect lock metrics
-	if err := mc.collectLockMetrics(ctx, clusterID, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect lock metrics: %v", err)
-	}
-
-	// Collect replication metrics
-	if err := mc.collectReplicationMetrics(ctx, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect replication metrics: %v", err)
-	}
-
-	// Collect table bloat metrics
-	if err := mc.collectBloatMetrics(ctx, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect bloat metrics: %v", err)
-	}
-
-	// Collect disk I/O metrics
-	if err := mc.collectDiskIOMetrics(ctx, clusterID, pool, metrics); err != nil {
-		mc.log.Warnf("Failed to collect disk I/O metrics: %v", err)
-	}
+	warn("connection", mc.collectConnectionMetrics(ctx, pool, metrics))
+	warn("cache", mc.collectCacheMetrics(ctx, pool, metrics))
+	warn("transaction", mc.collectTransactionMetrics(ctx, clusterID, pool, metrics))
+	warn("lock", mc.collectLockMetrics(ctx, clusterID, pool, metrics))
+	warn("replication", mc.collectReplicationMetrics(ctx, pool, metrics))
+	warn("bloat", mc.collectBloatMetrics(ctx, pool, metrics))
+	warn("disk_io", mc.collectDiskIOMetrics(ctx, clusterID, pool, metrics))
 
 	mc.cacheLatest(clusterID, metrics)
-	mc.log.Debugf("Collected metrics for cluster %s", clusterID)
+	logc.Debug("collected metrics")
 	return metrics, nil
 }
 

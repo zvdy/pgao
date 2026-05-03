@@ -89,12 +89,25 @@ func main() {
 
 	log.Info("Initialized analyzers")
 
+	// Prometheus registry: Go runtime + process collectors + pgao exporter +
+	// pgao runtime instrumentation. Built before the collectors so they can
+	// publish per-round metrics from their first tick.
+	promReg := prometheus.NewRegistry()
+	promReg.MustRegister(collectors.NewGoCollector())
+	promReg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	collectionInstr := pgaometrics.NewCollectionInstrumentation(promReg)
+	httpInstr := pgaometrics.NewHTTPInstrumentation(promReg)
+
 	// Initialize collectors with a per-cluster query timeout so one slow
-	// Postgres can't stall the whole collection cycle.
+	// Postgres can't stall the whole collection cycle. Wire the
+	// instrumentation so each round's duration + error count lands in
+	// /metrics.
 	metricsCollector := collector.NewMetricsCollector(pool, log, cfg.Metrics.CollectionInterval).
-		WithQueryTimeout(cfg.Metrics.QueryTimeout)
+		WithQueryTimeout(cfg.Metrics.QueryTimeout).
+		WithObserver(collectionInstr)
 	clusterCollector := collector.NewClusterCollector(pool, log, cfg.Metrics.CollectionInterval*2).
-		WithQueryTimeout(cfg.Metrics.QueryTimeout)
+		WithQueryTimeout(cfg.Metrics.QueryTimeout).
+		WithObserver(collectionInstr)
 
 	log.Info("Initialized collectors")
 
@@ -108,10 +121,6 @@ func main() {
 
 	log.Info("Started background collectors + supervisor")
 
-	// Prometheus registry: Go runtime + process collectors + pgao exporter.
-	promReg := prometheus.NewRegistry()
-	promReg.MustRegister(collectors.NewGoCollector())
-	promReg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	if cfg.Metrics.EnablePrometheus {
 		promReg.MustRegister(pgaometrics.NewExporter(metricsCollector).WithStateSource(pool))
 		log.Info("Prometheus exporter registered")
@@ -125,13 +134,15 @@ func main() {
 		metricsCollector,
 		clusterCollector,
 		log,
-	).WithPromRegistry(promReg).WithSecurity(api.SecurityOptions{
-		APIKey:         cfg.Server.Auth.APIKey,
-		RequestTimeout: cfg.Server.RequestTimeout,
-		MaxBodyBytes:   cfg.Server.MaxBodyBytes,
-		RateLimitRPS:   cfg.Server.RateLimitRPS,
-		RateLimitBurst: cfg.Server.RateLimitBurst,
-	})
+	).WithPromRegistry(promReg).
+		WithHTTPInstrumentation(httpInstr).
+		WithSecurity(api.SecurityOptions{
+			APIKey:         cfg.Server.Auth.APIKey,
+			RequestTimeout: cfg.Server.RequestTimeout,
+			MaxBodyBytes:   cfg.Server.MaxBodyBytes,
+			RateLimitRPS:   cfg.Server.RateLimitRPS,
+			RateLimitBurst: cfg.Server.RateLimitBurst,
+		})
 
 	if cfg.Server.Auth.APIKey != "" {
 		log.Info("API key authentication enabled for /api/v1/*")
