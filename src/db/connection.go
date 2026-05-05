@@ -35,16 +35,17 @@ type ConnectionPool struct {
 
 // ConnectionConfig holds database connection configuration
 type ConnectionConfig struct {
-	Host            string
-	Port            int
-	User            string
-	Password        string
-	Database        string
-	MaxConnections  int
-	MinConnections  int
-	ConnMaxLifetime time.Duration
-	ConnMaxIdleTime time.Duration
-	SSLMode         string
+	Host             string
+	Port             int
+	User             string
+	Password         string
+	Database         string
+	MaxConnections   int
+	MinConnections   int
+	ConnMaxLifetime  time.Duration
+	ConnMaxIdleTime  time.Duration
+	SSLMode          string
+	StatementTimeout time.Duration
 }
 
 // clampToInt32 narrows an int pool-size to int32, saturating on overflow so
@@ -136,6 +137,16 @@ func (cp *ConnectionPool) AddCluster(clusterID string, config ConnectionConfig) 
 		poolConfig.MinConns = clampToInt32(config.MinConnections)
 	} else {
 		poolConfig.MinConns = 5
+	}
+	// Translate StatementTimeout into a per-session GUC so a hung query
+	// can never outlive the configured cap, even if pgx's own context
+	// cancellation is racing the network. Postgres takes ms.
+	if config.StatementTimeout > 0 {
+		ms := config.StatementTimeout.Milliseconds()
+		if ms < 1 {
+			ms = 1
+		}
+		poolConfig.ConnConfig.RuntimeParams["statement_timeout"] = fmt.Sprintf("%d", ms)
 	}
 	if config.ConnMaxLifetime > 0 {
 		poolConfig.MaxConnLifetime = config.ConnMaxLifetime

@@ -61,16 +61,17 @@ func main() {
 	// marks the cluster as connecting; the supervisor takes it from there.
 	for _, clusterCfg := range cfg.Clusters {
 		connConfig := db.ConnectionConfig{
-			Host:            clusterCfg.Host,
-			Port:            clusterCfg.Port,
-			User:            clusterCfg.User,
-			Password:        clusterCfg.Password,
-			Database:        clusterCfg.Database,
-			SSLMode:         clusterCfg.SSLMode,
-			MaxConnections:  clusterCfg.MaxConnections,
-			MinConnections:  clusterCfg.MinConnections,
-			ConnMaxLifetime: clusterCfg.ConnMaxLifetime,
-			ConnMaxIdleTime: clusterCfg.ConnMaxIdleTime,
+			Host:             clusterCfg.Host,
+			Port:             clusterCfg.Port,
+			User:             clusterCfg.User,
+			Password:         clusterCfg.Password,
+			Database:         clusterCfg.Database,
+			SSLMode:          clusterCfg.SSLMode,
+			MaxConnections:   clusterCfg.MaxConnections,
+			MinConnections:   clusterCfg.MinConnections,
+			ConnMaxLifetime:  clusterCfg.ConnMaxLifetime,
+			ConnMaxIdleTime:  clusterCfg.ConnMaxIdleTime,
+			StatementTimeout: clusterCfg.StatementTimeout,
 		}
 		if err := pool.AddCluster(clusterCfg.ID, connConfig); err != nil {
 			log.WithError(err).WithField("cluster_id", clusterCfg.ID).Error("register cluster failed")

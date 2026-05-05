@@ -11,6 +11,7 @@ Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_g
 - [API contract](api/openapi.yaml) — OpenAPI 3.1 spec for every HTTP endpoint
 - [Architecture](docs/architecture.md) — components, data flow, sidecar vs extension
 - [Operator runbook](docs/runbook.md) — symptom-first guide for production incidents
+- [Helm chart](charts/pgao/values.yaml) — production install with NetworkPolicy, PDB, HPA, ServiceMonitor
 
 ## Quick Start
 

@@ -1,0 +1,203 @@
+# Default values for the pgao chart.
+# Every key documents its effect; unset keys fall through to chart defaults.
+
+image:
+  repository: ghcr.io/zvdy/pgao
+  tag: ""              # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Number of pgao replicas. Stateless, so >1 is safe (each replica scrapes
+# every cluster independently — fine for a small fleet, consider sharding
+# at >50 clusters).
+replicaCount: 2
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Optional pod-level scheduling.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+topologySpreadConstraints: []
+
+# Pod-level security context. fsGroup matches the UID baked into the image.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+# Optional Ingress. When enabled, host + tls/secretName must be filled in.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: pgao.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Optional Prometheus-operator ServiceMonitor. Set to true if you run the
+# operator; otherwise scrape /metrics directly.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# NetworkPolicy: when enabled, only the listed namespaces / podSelectors
+# can reach pgao on port 8080, and pgao egress is restricted to the
+# cluster CIDR + DNS. Open by default to avoid breaking k8s probes;
+# enable in production.
+networkPolicy:
+  enabled: false
+  # Allowed ingress sources for the API + /metrics scrape.
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+  # Egress: empty means k8s will allow nothing once policy is on, so we
+  # explicitly allow DNS + the configured cluster Postgres ports.
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Postgres clusters (override per-environment with the real CIDR).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: []
+      ports:
+        - port: 5432
+          protocol: TCP
+
+# PodDisruptionBudget: keep at least 1 replica available during voluntary
+# disruptions (node drains, cluster autoscaler).
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# HorizontalPodAutoscaler. Disabled by default; enable when scaling out
+# under HTTP load. Scaling helps the API, not the collection cadence —
+# every replica still scrapes every cluster.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Probes. Pgao exposes /health (always 200) and /ready (200 once at least
+# one cluster is reachable).
+probes:
+  liveness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  startup:
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 30
+
+# Pgao runtime config. The chart renders values.config into a
+# config.yaml ConfigMap; override per field, not via the whole document,
+# so per-env Helm values stay readable.
+config:
+  server:
+    host: 0.0.0.0
+    port: 8080
+    read_timeout: 15s
+    write_timeout: 15s
+    idle_timeout: 60s
+    request_timeout: 5s
+    max_body_bytes: 1048576
+    rate_limit_rps: 50
+    rate_limit_burst: 100
+    # auth.api_key is sourced from a k8s Secret, not from values.
+    # Set auth.existingSecret + auth.secretKey below.
+  logging:
+    level: info
+    format: json
+    output: stdout
+  metrics:
+    collection_interval: 60s
+    retention_days: 30
+    enable_prometheus: true
+    prometheus_port: 9090
+    query_timeout: 10s
+    health_check_interval: 30s
+
+# API key auth. Disabled by default. When enabled, supply either:
+# - existingSecret + secretKey  (preferred, secret managed externally)
+# - apiKey                      (chart creates the secret; value visible
+#                                in helm release values, NOT recommended
+#                                for production)
+auth:
+  enabled: false
+  existingSecret: ""
+  secretKey: api-key
+  apiKey: ""
+
+# Default per-cluster fallbacks. Each entry under .clusters inherits these
+# unless it overrides them.
+clusterDefaults:
+  port: 5432
+  ssl_mode: prefer
+  max_connections: 25
+  min_connections: 5
+  conn_max_lifetime: 1h
+  conn_max_idle_time: 30m
+  # statement_timeout is sent on every Postgres connection. Caps the
+  # longest single query a collector or handler can hold open.
+  statement_timeout: 10s
+
+# Postgres clusters to monitor. Required — chart has no useful default.
+# Example (override at install time):
+#   --set "clusters[0].id=prod" --set "clusters[0].host=10.0.0.1" \
+#   --set "clusters[0].user=pgao_monitor" \
+#   --set "clusters[0].existingPasswordSecret=pgao-prod"
+clusters: []
+# - id: prod-cluster-1
+#   name: Production Cluster 1
+#   host: pg-prod-1.svc.cluster.local
+#   port: 5432
+#   user: pgao_monitor
+#   database: postgres
+#   ssl_mode: require
+#   # Either inline the password (NOT recommended) or reference a Secret:
+#   existingPasswordSecret: pgao-prod-1
+#   passwordSecretKey: password

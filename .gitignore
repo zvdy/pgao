@@ -1,4 +1,6 @@
-pgao
+# Match the built binary at repo root only — naked `pgao` would also
+# swallow the charts/pgao directory.
+/pgao
 *.exe
 *.dll
 *.so

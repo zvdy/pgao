@@ -1,0 +1,19 @@
+apiVersion: v2
+name: pgao
+description: PostgreSQL Analytics Observer — multi-cluster metrics + slow queries
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/zvdy/pgao
+sources:
+  - https://github.com/zvdy/pgao
+maintainers:
+  - name: zvdy
+    url: https://github.com/zvdy
+keywords:
+  - postgres
+  - observability
+  - prometheus
+  - sre
+annotations:
+  artifacthub.io/license: Apache-2.0
