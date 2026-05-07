@@ -19,6 +19,7 @@ import (
 	"github.com/zvdy/pgao/src/config"
 	"github.com/zvdy/pgao/src/db"
 	pgaometrics "github.com/zvdy/pgao/src/metrics"
+	webui "github.com/zvdy/pgao/web"
 )
 
 func main() {
@@ -144,6 +145,18 @@ func main() {
 			RateLimitRPS:   cfg.Server.RateLimitRPS,
 			RateLimitBurst: cfg.Server.RateLimitBurst,
 		})
+
+	if cfg.Server.UIEnabledOrDefault() {
+		uiHandler, err := webui.Handler()
+		if err != nil {
+			log.WithError(err).Warn("could not initialize embedded UI; serving API only")
+		} else {
+			handler = handler.WithUI(uiHandler)
+			log.Info("Embedded UI enabled at /")
+		}
+	} else {
+		log.Info("Embedded UI disabled by config (server.ui_enabled=false)")
+	}
 
 	if cfg.Server.Auth.APIKey != "" {
 		log.Info("API key authentication enabled for /api/v1/*")

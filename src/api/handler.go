@@ -37,6 +37,7 @@ type Handler struct {
 	promRegistry        prometheus.Gatherer
 	sec                 SecurityOptions
 	httpInstr           HTTPInstrumentationProvider
+	ui                  http.Handler
 }
 
 // SecurityOptions controls the middleware applied to /api/v1/*. Zero value
@@ -109,6 +110,14 @@ func (h *Handler) WithHTTPInstrumentation(p HTTPInstrumentationProvider) *Handle
 	return h
 }
 
+// WithUI installs a handler at "/" that serves the embedded SPA. Pass nil
+// (or call WithUI(false, ...)) to leave / alone — useful when a separate
+// Ingress fronts both the API and a CDN-hosted UI.
+func (h *Handler) WithUI(ui http.Handler) *Handler {
+	h.ui = ui
+	return h
+}
+
 // RegisterRoutes registers all API routes. /health, /ready, and /metrics are
 // never wrapped in auth/timeout/rate-limit middleware so k8s probes and
 // Prometheus scrapes keep working even if the caller has no API key.
@@ -162,6 +171,13 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	api.HandleFunc("/clusters/{id}/queries", h.GetSlowQueries).Methods("GET")
 	api.HandleFunc("/clusters/{id}/tables", h.GetTableMetrics).Methods("GET")
 	api.HandleFunc("/clusters/{id}/alerts", h.GetAlerts).Methods("GET")
+
+	// UI: catch-all that runs after /health, /ready, /metrics, and /api/v1/*
+	// have been routed. The embedded handler does its own SPA fallback so
+	// /clusters/foo deep links work after a full reload.
+	if h.ui != nil {
+		r.PathPrefix("/").Handler(chain(h.ui, rec, reqLog)).Methods("GET")
+	}
 }
 
 // muxMiddleware adapts a plain http middleware to the mux.MiddlewareFunc

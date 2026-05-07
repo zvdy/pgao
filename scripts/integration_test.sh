@@ -110,6 +110,17 @@ main() {
     || fail "/tables did not return a JSON array: $tables"
   pass "/tables returned a JSON array"
 
+  echo "--- GET / (web UI) ---"
+  body="$(curl -s "$HOST/" || true)"
+  echo "$body" | grep -qi '<html' \
+    || fail "/ did not serve HTML for the embedded SPA: $body"
+  pass "embedded SPA served at /"
+
+  echo "--- GET /clusters/integration-test (SPA fallback) ---"
+  code="$(curl -s -o /dev/null -w '%{http_code}' "$HOST/clusters/integration-test")"
+  [ "$code" = "200" ] || fail "SPA deep link should fall back to index, got $code"
+  pass "SPA fallback returns 200 on deep link"
+
   echo "--- GET /metrics ---"
   prom="$(curl -sf "$HOST/metrics")"
   echo "$prom" | grep -q '^pgao_cluster_up' \

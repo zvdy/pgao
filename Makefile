@@ -35,8 +35,30 @@ KIND_IMAGE_TAG ?= integration
 # Default target
 all: clean deps fmt build test
 
-# Build the application
-build:
+# Build the web UI bundle. Requires Node + npm. Output is web/dist, which
+# the Go build embeds via //go:embed in web/embed.go.
+.PHONY: ui ui-dev
+ui:
+	@echo "Building web UI..."
+	@command -v npm >/dev/null 2>&1 || { echo "npm is required: brew install node"; exit 1; }
+	cd web && npm ci --no-audit --no-fund && npm run build
+	@echo "Web UI built: web/dist/"
+
+# Hot-reload dev server. Run pgao on :8080 separately; the dev server
+# proxies /api, /metrics, /ready, /health.
+ui-dev:
+	cd web && npm install --no-audit --no-fund && npm run dev
+
+# Build the application. Depends on the web bundle so the embedded SPA
+# always reflects the source tree. Skip with `make build-go` if you only
+# touched .go files.
+build: ui build-go
+
+# Plain Go build with no UI dependency. The web/dist fallback shipped in
+# the repo means this still produces a working binary; it just serves the
+# "UI not built" placeholder.
+.PHONY: build-go
+build-go:
 	@echo "Building $(BINARY_NAME)..."
 	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) $(MAIN_PATH)
 	@echo "Build complete: bin/$(BINARY_NAME)"
@@ -107,6 +129,7 @@ clean:
 	@echo "Cleaning..."
 	$(GOCLEAN)
 	rm -rf bin/
+	rm -rf web/dist/assets web/node_modules
 	rm -f coverage.out coverage.html
 	@echo "Clean complete"
 
