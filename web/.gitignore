@@ -5,3 +5,8 @@ node_modules/
 # a fresh clone before `make ui` runs.
 dist/*
 !dist/index.html
+
+# tsc -b cache + emitted output of vite.config.ts.
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
