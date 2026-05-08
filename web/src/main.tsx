@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
 import Overview from './pages/Overview';
 import ClusterDetail from './pages/ClusterDetail';
+import Analyzer from './pages/Analyzer';
 import './styles.css';
 
 const queryClient = new QueryClient({
@@ -28,6 +29,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<App />}>
             <Route index element={<Overview />} />
             <Route path="clusters/:id" element={<ClusterDetail />} />
+            <Route path="analyze" element={<Analyzer />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

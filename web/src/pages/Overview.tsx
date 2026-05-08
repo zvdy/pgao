@@ -1,11 +1,32 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { api } from '../api';
+import { api, type Alert } from '../api';
 import StatusBadge from '../components/StatusBadge';
 
 export default function Overview() {
   const ready = useQuery({ queryKey: ['ready'], queryFn: api.ready });
   const clusters = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters });
+
+  // Fan out an /alerts query per cluster so we can render the alert
+  // count column without any backend changes. TanStack Query dedupes
+  // these against the per-cluster page if the user opens one.
+  const alertResults = useQueries({
+    queries: (clusters.data ?? []).map((c) => ({
+      queryKey: ['alerts', c.id],
+      queryFn: () => api.getAlerts(c.id),
+      retry: false,
+    })),
+  });
+  const alertsByCluster = new Map<string, Alert[]>();
+  (clusters.data ?? []).forEach((c, i) => {
+    if (alertResults[i]?.data) {
+      alertsByCluster.set(c.id, alertResults[i]!.data);
+    }
+  });
+  const fleetCritical = Array.from(alertsByCluster.values())
+    .flat()
+    .filter((a) => a.severity === 'critical' && (!a.status || a.status === 'active'))
+    .length;
 
   if (ready.error || clusters.error) {
     return (
@@ -23,6 +44,11 @@ export default function Overview() {
           {ready.data
             ? `${ready.data.healthy} / ${ready.data.total} clusters healthy`
             : 'loading…'}
+          {fleetCritical > 0 && (
+            <>
+              {' '}· <span className="badge sev-critical">{fleetCritical} critical alert{fleetCritical === 1 ? '' : 's'}</span>
+            </>
+          )}
         </p>
       </section>
 
@@ -35,6 +61,7 @@ export default function Overview() {
               <th>Status</th>
               <th>Version</th>
               <th>Databases</th>
+              <th>Alerts</th>
               <th></th>
             </tr>
           </thead>
@@ -43,6 +70,10 @@ export default function Overview() {
               const cfg = (c.configuration ?? {}) as Record<string, unknown>;
               const version = String(cfg.version ?? 'unknown');
               const dbs = Array.isArray(cfg.databases) ? cfg.databases.length : 0;
+              const alerts = (alertsByCluster.get(c.id) ?? []).filter(
+                (a) => !a.status || a.status === 'active',
+              );
+              const worst = worstSeverity(alerts);
               return (
                 <tr key={c.id}>
                   <td>
@@ -56,6 +87,13 @@ export default function Overview() {
                   <td className="muted">{version.split(' ').slice(0, 2).join(' ')}</td>
                   <td className="muted">{dbs}</td>
                   <td>
+                    {alerts.length === 0 ? (
+                      <span className="muted">—</span>
+                    ) : (
+                      <span className={`badge sev-${worst}`}>{alerts.length}</span>
+                    )}
+                  </td>
+                  <td>
                     <Link to={`/clusters/${encodeURIComponent(c.id)}`}>details →</Link>
                   </td>
                 </tr>
@@ -63,7 +101,7 @@ export default function Overview() {
             })}
             {(clusters.data ?? []).length === 0 && !clusters.isLoading && (
               <tr>
-                <td colSpan={5} className="muted center">
+                <td colSpan={6} className="muted center">
                   No clusters registered yet.
                 </td>
               </tr>
@@ -73,4 +111,12 @@ export default function Overview() {
       </section>
     </div>
   );
+}
+
+function worstSeverity(alerts: Alert[]): string {
+  const order = ['critical', 'high', 'medium', 'low', 'info'];
+  for (const level of order) {
+    if (alerts.some((a) => a.severity === level)) return level;
+  }
+  return 'info';
 }

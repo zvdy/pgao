@@ -1,10 +1,12 @@
 import { Link, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, ApiError } from '../api';
+import { api, ApiError, type Alert, type AlertSeverity } from '../api';
 import StatusBadge from '../components/StatusBadge';
 
-type Tab = 'metrics' | 'queries' | 'tables';
+type Tab = 'metrics' | 'queries' | 'tables' | 'alerts';
+
+const TABS: readonly Tab[] = ['metrics', 'queries', 'tables', 'alerts'] as const;
 
 export default function ClusterDetail() {
   const { id = '' } = useParams<{ id: string }>();
@@ -14,6 +16,17 @@ export default function ClusterDetail() {
     queryKey: ['cluster', id],
     queryFn: () => api.getCluster(id),
   });
+
+  // Lightweight alert count for the tab badge — same query the Alerts
+  // panel uses, so TanStack Query dedupes the request.
+  const alerts = useQuery({
+    queryKey: ['alerts', id],
+    queryFn: () => api.getAlerts(id),
+    retry: false,
+  });
+  const activeAlertCount = (alerts.data ?? []).filter(
+    (a) => !a.status || a.status === 'active',
+  ).length;
 
   if (cluster.isLoading) return <div className="muted">loading…</div>;
   if (cluster.error) return <div className="error">{String(cluster.error)}</div>;
@@ -30,7 +43,7 @@ export default function ClusterDetail() {
       </header>
 
       <nav className="tabs" role="tablist">
-        {(['metrics', 'queries', 'tables'] as const).map((t) => (
+        {TABS.map((t) => (
           <button
             key={t}
             role="tab"
@@ -39,6 +52,9 @@ export default function ClusterDetail() {
             onClick={() => setTab(t)}
           >
             {t}
+            {t === 'alerts' && activeAlertCount > 0 && (
+              <span className="pill bad">{activeAlertCount}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -46,6 +62,7 @@ export default function ClusterDetail() {
       {tab === 'metrics' && <MetricsPanel id={id} />}
       {tab === 'queries' && <SlowQueriesPanel id={id} />}
       {tab === 'tables' && <TablesPanel id={id} />}
+      {tab === 'alerts' && <AlertsPanel id={id} />}
     </div>
   );
 }
@@ -153,4 +170,61 @@ function TablesPanel({ id }: { id: string }) {
       </tbody>
     </table>
   );
+}
+
+function AlertsPanel({ id }: { id: string }) {
+  const q = useQuery({ queryKey: ['alerts', id], queryFn: () => api.getAlerts(id) });
+  if (q.error) return <div className="error">{String(q.error)}</div>;
+  const rows = q.data ?? [];
+  if (rows.length === 0) {
+    return <div className="muted">no active alerts</div>;
+  }
+
+  // Sort by severity (critical first) then most recent.
+  const order: Record<AlertSeverity, number> = {
+    critical: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+    info: 4,
+  };
+  const sorted = [...rows].sort((a, b) => {
+    const sa = order[a.severity] ?? 99;
+    const sb = order[b.severity] ?? 99;
+    if (sa !== sb) return sa - sb;
+    return (b.timestamp ?? '').localeCompare(a.timestamp ?? '');
+  });
+
+  return (
+    <ul className="alerts">
+      {sorted.map((a, i) => (
+        <li key={a.id ?? `${a.title}-${i}`} className={`alert sev-${a.severity}`}>
+          <div className="alert-row">
+            <span className={`badge sev-${a.severity}`}>{a.severity}</span>
+            <strong className="alert-title">{a.title}</strong>
+            {a.metric && <span className="muted">· {a.metric}</span>}
+          </div>
+          <p className="alert-desc">{a.description}</p>
+          {(a.actions ?? []).length > 0 && (
+            <ul className="alert-actions">
+              {(a.actions ?? []).map((act, j) => (
+                <li key={j}>{act}</li>
+              ))}
+            </ul>
+          )}
+          <AlertContext alert={a} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function AlertContext({ alert }: { alert: Alert }) {
+  const bits: string[] = [];
+  if (alert.threshold !== undefined && alert.current_value !== undefined) {
+    bits.push(`current ${alert.current_value} vs threshold ${alert.threshold}`);
+  }
+  if (alert.timestamp) bits.push(new Date(alert.timestamp).toLocaleString());
+  if (bits.length === 0) return null;
+  return <div className="muted alert-meta">{bits.join(' · ')}</div>;
 }

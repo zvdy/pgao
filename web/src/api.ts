@@ -91,6 +91,51 @@ export interface TableMetrics {
   last_autovacuum?: string | null;
 }
 
+// Alert mirrors src/models/alert.go. Only the fields the UI renders are
+// strongly typed; the backend may add fields without breaking the SPA.
+export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+export interface Alert {
+  id?: string;
+  type: string;
+  severity: AlertSeverity;
+  cluster_id: string;
+  title: string;
+  description: string;
+  metric?: string;
+  threshold?: number;
+  current_value?: number;
+  timestamp: string;
+  status?: 'active' | 'acknowledged' | 'resolved';
+  actions?: string[];
+}
+
+export interface QueryAnalysis {
+  query: string;
+  normalized: string;
+  query_type: string;
+  tables: string[];
+  indexes_used: string[];
+  columns: string[];
+  has_subquery: boolean;
+  has_join: boolean;
+  join_type?: string;
+  has_aggregate: boolean;
+  has_window_function: boolean;
+  complexity: string;
+  estimated_cost: number;
+  suggestions: Array<{
+    type: string;
+    severity: string;
+    message: string;
+    impact: string;
+    confidence: number;
+    recommended?: string;
+  }>;
+  warnings: string[];
+  timestamp: string;
+}
+
 export const api = {
   ready: () => call<Readiness>('/ready'),
   listClusters: () => call<Cluster[]>('/api/v1/clusters'),
@@ -105,4 +150,11 @@ export const api = {
     call<TableMetrics[]>(
       `/api/v1/clusters/${encodeURIComponent(id)}/tables?limit=${limit}`,
     ),
+  getAlerts: (id: string) =>
+    call<Alert[]>(`/api/v1/clusters/${encodeURIComponent(id)}/alerts`),
+  analyzeQuery: (query: string) =>
+    call<QueryAnalysis>('/api/v1/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ query }),
+    }),
 };

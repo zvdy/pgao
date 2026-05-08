@@ -22,6 +22,12 @@ export default function App() {
           <Link to="/" className={loc.pathname === '/' ? 'active' : ''}>
             Overview
           </Link>
+          <Link
+            to="/analyze"
+            className={loc.pathname.startsWith('/analyze') ? 'active' : ''}
+          >
+            Analyzer
+          </Link>
         </nav>
         <div className="auth">
           <input
