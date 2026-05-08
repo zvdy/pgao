@@ -1,0 +1,12 @@
+node_modules/
+
+# dist/ is built artifact. Most files are gitignored, but we keep
+# a fallback dist/index.html (commited) so go:embed compiles even on
+# a fresh clone before `make ui` runs.
+dist/*
+!dist/index.html
+
+# tsc -b cache + emitted output of vite.config.ts.
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js

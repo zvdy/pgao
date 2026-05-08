@@ -31,6 +31,20 @@ type ServerConfig struct {
 	RateLimitRPS   float64       `yaml:"rate_limit_rps"`
 	RateLimitBurst int           `yaml:"rate_limit_burst"`
 	Auth           AuthConfig    `yaml:"auth"`
+	// UIEnabled controls whether the embedded SPA is served at /. Default
+	// true. Set false when a separate Ingress fronts both the API and a
+	// CDN-hosted UI.
+	UIEnabled *bool `yaml:"ui_enabled"`
+}
+
+// UIEnabledOrDefault returns whether the SPA should be served. A nil
+// pointer means the operator omitted the key entirely; default to true
+// so the UI ships unless explicitly disabled.
+func (s ServerConfig) UIEnabledOrDefault() bool {
+	if s.UIEnabled == nil {
+		return true
+	}
+	return *s.UIEnabled
 }
 
 // AuthConfig gates the /api/v1/* surface behind a static bearer token or

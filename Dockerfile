@@ -5,7 +5,18 @@
 # release workflow records the resolved digest and operators are
 # encouraged to deploy by digest, not by tag.
 
-# ---- Build stage --------------------------------------------------------
+# ---- Web UI build stage -------------------------------------------------
+FROM node:22-alpine3.22 AS web-builder
+
+WORKDIR /web
+
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci --no-audit --no-fund
+
+COPY web/ ./
+RUN npm run build
+
+# ---- Go build stage -----------------------------------------------------
 FROM golang:1.25-alpine3.22 AS builder
 
 RUN apk add --no-cache git make gcc musl-dev
@@ -16,6 +27,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY src/ ./src/
+COPY web/ ./web/
+# Replace the committed fallback dist with the freshly-built bundle so
+# go:embed picks up the production bundle, not the placeholder.
+COPY --from=web-builder /web/dist /build/web/dist
 
 # pg_query_go links libpg_query via cgo, so CGO_ENABLED stays on. The
 # binary is dynamically linked against musl libc, which is present in
