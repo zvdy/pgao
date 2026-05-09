@@ -29,7 +29,18 @@ clusters:
     user: "pgao_monitor"
     password: "${DATABASE_PASSWORD}"
     database: "postgres"
-    ssl_mode: "require"
+    # ssl_mode is the libpq mode: disable | allow | prefer | require |
+    # verify-ca | verify-full. verify-full is the recommended setting
+    # whenever pgao is talking over an untrusted network.
+    ssl_mode: "verify-full"
+    # TLS material for verify-ca / verify-full + optional mTLS auth.
+    # Paths are read once at startup; restart pgao after rotating certs.
+    ssl_root_cert: "/etc/pgao-tls/prod/ca.crt"
+    ssl_cert: "/etc/pgao-tls/prod/tls.crt"
+    ssl_key: "/etc/pgao-tls/prod/tls.key"
+    # Override the SNI / cert-verification hostname when connecting via
+    # an LB whose DNS doesn't match the server cert (e.g. RDS proxy).
+    # ssl_server_name: "prod.cluster-abc.us-east-1.rds.amazonaws.com"
     max_connections: 25
     min_connections: 5
     conn_max_lifetime: 1h

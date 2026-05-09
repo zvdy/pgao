@@ -87,10 +87,26 @@ spec:
             - name: config
               mountPath: /etc/pgao
               readOnly: true
+            {{- range $i, $c := .Values.clusters }}
+            {{- if $c.existingTLSSecret }}
+            - name: {{ printf "tls-%s" $c.id }}
+              mountPath: {{ printf "/etc/pgao-tls/%s" $c.id }}
+              readOnly: true
+            {{- end }}
+            {{- end }}
       volumes:
         - name: config
           configMap:
             name: {{ include "pgao.fullname" . }}-config
+        {{- range $i, $c := .Values.clusters }}
+        {{- if $c.existingTLSSecret }}
+        - name: {{ printf "tls-%s" $c.id }}
+          secret:
+            secretName: {{ $c.existingTLSSecret }}
+            # 0400 octal = 256: read-only for the pgao user, no group/world
+            defaultMode: 256
+        {{- end }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector: {{- toYaml . | nindent 8 }}
       {{- end }}

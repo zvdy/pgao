@@ -9,6 +9,18 @@ clusters:
     database: postgres
     existingPasswordSecret: ci-pg-credentials
     passwordSecretKey: password
+  # Second cluster exercises the TLS path so kubeconform validates the
+  # extra Secret volume / mount + ssl_* keys in the rendered config.
+  - id: ci-tls
+    name: CI TLS cluster
+    host: postgres-tls.example.com
+    user: pgao_monitor
+    database: postgres
+    ssl_mode: verify-full
+    sslServerName: postgres.internal
+    existingPasswordSecret: ci-pg-credentials
+    passwordSecretKey: password
+    existingTLSSecret: ci-pg-tls
 
 auth:
   enabled: true

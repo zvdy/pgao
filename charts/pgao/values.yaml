@@ -190,6 +190,22 @@ clusterDefaults:
 #   --set "clusters[0].id=prod" --set "clusters[0].host=10.0.0.1" \
 #   --set "clusters[0].user=pgao_monitor" \
 #   --set "clusters[0].existingPasswordSecret=pgao-prod"
+#
+# TLS to Postgres (RDS / Aurora / mTLS):
+#   set ssl_mode to verify-ca or verify-full and reference an existing
+#   k8s Secret holding the cert bundle:
+#
+#     clusters:
+#       - id: prod
+#         host: prod.cluster-abc.us-east-1.rds.amazonaws.com
+#         user: pgao_monitor
+#         ssl_mode: verify-full
+#         existingPasswordSecret: pgao-prod-pw
+#         existingTLSSecret: pgao-prod-tls   # holds ca.crt / tls.crt / tls.key
+#
+#   The chart mounts the secret at /etc/pgao/tls/<id>/{ca.crt,tls.crt,tls.key}
+#   and renders ssl_root_cert / ssl_cert / ssl_key paths in config.yaml.
+#   Override the standard Secret keys via tlsSecretKeys.{ca,cert,key}.
 clusters: []
 # - id: prod-cluster-1
 #   name: Production Cluster 1

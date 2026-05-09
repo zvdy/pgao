@@ -57,4 +57,14 @@ data:
         conn_max_lifetime: {{ default $.Values.clusterDefaults.conn_max_lifetime $c.conn_max_lifetime | quote }}
         conn_max_idle_time: {{ default $.Values.clusterDefaults.conn_max_idle_time $c.conn_max_idle_time | quote }}
         statement_timeout: {{ default $.Values.clusterDefaults.statement_timeout $c.statement_timeout | quote }}
+        {{- if $c.existingTLSSecret }}
+        # TLS material mounted from k8s Secret {{ $c.existingTLSSecret }}.
+        # See volume + volumeMount in the Deployment for path layout.
+        ssl_root_cert: {{ printf "/etc/pgao-tls/%s/%s" $c.id (dig "tlsSecretKeys" "ca" "ca.crt" $c) | quote }}
+        ssl_cert: {{ printf "/etc/pgao-tls/%s/%s" $c.id (dig "tlsSecretKeys" "cert" "tls.crt" $c) | quote }}
+        ssl_key: {{ printf "/etc/pgao-tls/%s/%s" $c.id (dig "tlsSecretKeys" "key" "tls.key" $c) | quote }}
+        {{- if $c.sslServerName }}
+        ssl_server_name: {{ $c.sslServerName | quote }}
+        {{- end }}
+        {{- end }}
       {{- end }}

@@ -46,6 +46,13 @@ type ConnectionConfig struct {
 	ConnMaxIdleTime  time.Duration
 	SSLMode          string
 	StatementTimeout time.Duration
+	// TLS material loaded from disk at AddCluster time. Empty paths
+	// leave pgx's default TLS handling alone (it picks up the system
+	// CA bundle when ssl_mode requires verification).
+	SSLRootCert   string
+	SSLCert       string
+	SSLKey        string
+	SSLServerName string
 }
 
 // clampToInt32 narrows an int pool-size to int32, saturating on overflow so
@@ -157,6 +164,16 @@ func (cp *ConnectionPool) AddCluster(clusterID string, config ConnectionConfig) 
 		poolConfig.MaxConnIdleTime = config.ConnMaxIdleTime
 	} else {
 		poolConfig.MaxConnIdleTime = 30 * time.Minute
+	}
+
+	// Apply TLS overrides (root CA / client cert / SNI) on top of whatever
+	// pgx parsed from the connection string. Failures here are reported as
+	// state=Unhealthy so the supervisor surfaces the error to operators.
+	if err := applyTLSConfig(poolConfig, config); err != nil {
+		cp.status.ensure(clusterID)
+		cp.status.transition(clusterID, false, err, time.Now(), cp.supervisorCfg.withDefaults().MinBackoff)
+		cp.log.WithError(err).WithField("cluster_id", clusterID).Error("invalid TLS configuration")
+		return nil
 	}
 
 	// pgxpool.NewWithConfig does not actually open connections — it lazily
