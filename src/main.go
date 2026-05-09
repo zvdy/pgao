@@ -73,6 +73,10 @@ func main() {
 			ConnMaxLifetime:  clusterCfg.ConnMaxLifetime,
 			ConnMaxIdleTime:  clusterCfg.ConnMaxIdleTime,
 			StatementTimeout: clusterCfg.StatementTimeout,
+			SSLRootCert:      clusterCfg.SSLRootCert,
+			SSLCert:          clusterCfg.SSLCert,
+			SSLKey:           clusterCfg.SSLKey,
+			SSLServerName:    clusterCfg.SSLServerName,
 		}
 		if err := pool.AddCluster(clusterCfg.ID, connConfig); err != nil {
 			log.WithError(err).WithField("cluster_id", clusterCfg.ID).Error("register cluster failed")

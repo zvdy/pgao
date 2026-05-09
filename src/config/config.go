@@ -73,10 +73,28 @@ type ClusterConfig struct {
 	// run on this cluster. Translated to a per-session
 	// `SET statement_timeout` so a hung query doesn't block the
 	// collection round past metrics.query_timeout. Zero = disabled.
-	StatementTimeout time.Duration     `yaml:"statement_timeout"`
-	Region           string            `yaml:"region"`
-	Environment      string            `yaml:"environment"`
-	Tags             map[string]string `yaml:"tags"`
+	StatementTimeout time.Duration `yaml:"statement_timeout"`
+	// SSLRootCert is a path to a PEM file containing the trust anchors
+	// for verifying the Postgres server certificate. Required for
+	// ssl_mode: verify-ca / verify-full when the server cert is not
+	// signed by a system-trusted CA (e.g. RDS root bundle, internal CA).
+	SSLRootCert string `yaml:"ssl_root_cert"`
+	// SSLCert is a path to a PEM file containing the client certificate
+	// pgao should present to Postgres for mTLS auth. Pair with SSLKey.
+	// Used by Aurora/RDS IAM cert auth and operator-managed mTLS.
+	SSLCert string `yaml:"ssl_cert"`
+	// SSLKey is a path to a PEM file containing the private key matching
+	// SSLCert. Loaded once at AddCluster time; not re-read on rotation
+	// (operators should restart the pod after rolling certs).
+	SSLKey string `yaml:"ssl_key"`
+	// SSLServerName overrides the SNI / cert-verification hostname.
+	// Useful when connecting via a load balancer whose DNS name doesn't
+	// match the Postgres server certificate (e.g. RDS proxy in front of
+	// a cluster cert issued for the writer endpoint).
+	SSLServerName string            `yaml:"ssl_server_name"`
+	Region        string            `yaml:"region"`
+	Environment   string            `yaml:"environment"`
+	Tags          map[string]string `yaml:"tags"`
 }
 
 // LoggingConfig represents logging configuration

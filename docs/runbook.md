@@ -26,6 +26,9 @@ Common causes:
 | `LastError` substring        | Likely cause                                             |
 | ---------------------------- | -------------------------------------------------------- |
 | `connection refused`         | Postgres not listening, or wrong port                    |
+| `x509: certificate signed by unknown authority` | `ssl_root_cert` not set or wrong bundle |
+| `x509: certificate is valid for ..., not <host>` | Cert SAN mismatch — set `ssl_server_name`           |
+| `tls: failed to verify certificate`     | `ssl_mode: verify-full` against an unsigned/expired cert  |
 | `dial tcp: lookup ... NX`    | DNS / Service name typo                                  |
 | `password authentication`    | Wrong `password` or expired credential                   |
 | `pq: SSL is not enabled`     | `ssl_mode: require` against a server with TLS off        |
@@ -152,6 +155,64 @@ server:
 curl -s -o /dev/null -w "%{http_code}\n" -X GET \
   -H "X-API-Key: $TOKEN" \
   "$PGAO/api/v1/clusters" | head
+```
+
+## Connecting to RDS / Aurora / managed Postgres with TLS
+
+AWS-hosted Postgres requires `verify-full` against the [RDS root
+bundle](https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem).
+On a self-managed cluster issued by an internal CA you'll have your own
+bundle; the procedure is the same.
+
+**Step 1.** Pull the bundle (RDS):
+
+```sh
+curl -fsSL https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+  -o rds-ca.pem
+```
+
+**Step 2.** Create a k8s Secret holding the bundle. Add a client cert
++ key only if you're doing mTLS (Aurora IAM cert auth or operator
+mTLS); for plain TLS `ca.crt` alone is enough.
+
+```sh
+kubectl -n pgao create secret generic pgao-prod-tls \
+  --from-file=ca.crt=rds-ca.pem
+# For mTLS:
+#   --from-file=tls.crt=client.crt --from-file=tls.key=client.key
+```
+
+**Step 3.** Reference it from the Helm values:
+
+```yaml
+clusters:
+  - id: prod
+    host: prod.cluster-abc.us-east-1.rds.amazonaws.com
+    user: pgao_monitor
+    ssl_mode: verify-full
+    existingPasswordSecret: pgao-prod-pw
+    existingTLSSecret: pgao-prod-tls
+    # When the LB hostname doesn't match the server cert SAN:
+    # sslServerName: <writer-endpoint>
+```
+
+**Step 4.** Verify the supervisor reports healthy:
+
+```sh
+curl -s "$PGAO/api/v1/clusters/prod" | jq '.status'
+# expect: "healthy"
+```
+
+If you see `x509: certificate signed by unknown authority`, the bundle
+in the Secret is wrong (truncated, incorrect format). If you see
+`x509: certificate is valid for <CN>, not <host>`, set
+`sslServerName` to a hostname covered by the cert SAN.
+
+**Rotation.** Pgao reads cert files once at startup. After replacing the
+Secret contents, restart the Deployment:
+
+```sh
+kubectl -n pgao rollout restart deployment/pgao
 ```
 
 ## CI release didn't push to GHCR
