@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -117,13 +118,24 @@ func main() {
 
 	log.Info("Initialized collectors")
 
-	// Start collectors + connection supervisor in the background.
+	// Start collectors + connection supervisor in the background. Each is
+	// added to bgWG so SIGTERM can wait for them to finish their current
+	// iteration before pool.Close runs and slams in-flight queries.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go pool.Supervise(ctx)
-	go metricsCollector.Start(ctx)
-	go clusterCollector.Start(ctx)
+	var bgWG sync.WaitGroup
+	runBg := func(name string, fn func(context.Context)) {
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			fn(ctx)
+			log.WithField("goroutine", name).Debug("background goroutine returned")
+		}()
+	}
+	runBg("supervisor", pool.Supervise)
+	runBg("metrics-collector", metricsCollector.Start)
+	runBg("cluster-collector", clusterCollector.Start)
 
 	log.Info("Started background collectors + supervisor")
 
@@ -199,15 +211,38 @@ func main() {
 
 	log.Info("Shutting down gracefully...")
 
-	// Cancel context for collectors
-	cancel()
-
-	// Shutdown HTTP server
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownTimeout := cfg.Server.ShutdownTimeout
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 30 * time.Second
+	}
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer shutdownCancel()
 
+	// 1. Stop accepting new HTTP requests and let in-flight ones drain.
+	//    Handlers that call collectors use r.Context() so they're bounded
+	//    by the per-request timeout middleware (5 s default), not by us.
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Errorf("Server shutdown error: %v", err)
+		log.WithError(err).Error("HTTP server shutdown error")
+	}
+
+	// 2. Signal the supervisor + collectors to stop their tick loops.
+	cancel()
+
+	// 3. Wait for them to actually return so pool.Close (deferred at the
+	//    top of main) doesn't yank connections from a query mid-flight.
+	//    Cap the wait at the remaining shutdown budget; log if we time out
+	//    so an operator on the receiving end of a stuck collector can find
+	//    it.
+	drained := make(chan struct{})
+	go func() {
+		bgWG.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+		log.Info("background goroutines drained")
+	case <-shutdownCtx.Done():
+		log.Warn("background goroutines did not drain before shutdown deadline")
 	}
 
 	log.Info("PostgreSQL Analytics Observer stopped")

@@ -21,6 +21,9 @@ data:
       max_body_bytes: {{ .Values.config.server.max_body_bytes }}
       rate_limit_rps: {{ .Values.config.server.rate_limit_rps }}
       rate_limit_burst: {{ .Values.config.server.rate_limit_burst }}
+      {{- with .Values.config.server.shutdown_timeout }}
+      shutdown_timeout: {{ . | quote }}
+      {{- end }}
       {{- if .Values.auth.enabled }}
       auth:
         # The actual key is loaded from PGAO_API_KEY (set in the
