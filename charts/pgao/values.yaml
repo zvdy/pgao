@@ -26,6 +26,10 @@ tolerations: []
 affinity: {}
 priorityClassName: ""
 topologySpreadConstraints: []
+# Pod terminationGracePeriodSeconds. Should be >= config.server.shutdown_timeout
+# so the kubelet doesn't SIGKILL pgao while it's still draining background
+# collectors. Empty falls back to k8s default (30 s).
+terminationGracePeriodSeconds: 30
 
 # Pod-level security context. fsGroup matches the UID baked into the image.
 podSecurityContext:
@@ -147,6 +151,10 @@ config:
     max_body_bytes: 1048576
     rate_limit_rps: 50
     rate_limit_burst: 100
+    # Total grace period for SIGTERM: HTTP drain + collector drain.
+    # Should be <= terminationGracePeriodSeconds on the Pod (default
+    # 30s in k8s) so the kubelet doesn't SIGKILL pgao mid-drain.
+    shutdown_timeout: 25s
     # auth.api_key is sourced from a k8s Secret, not from values.
     # Set auth.existingSecret + auth.secretKey below.
   logging:

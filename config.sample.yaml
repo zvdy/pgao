@@ -14,6 +14,10 @@ server:
   # Process-wide token bucket for /api/v1/*. Set to 0 to disable.
   rate_limit_rps: 50
   rate_limit_burst: 100
+  # Total grace period for SIGTERM: HTTP drain + background collector
+  # drain. Should be <= the orchestrator's terminationGracePeriodSeconds
+  # (k8s default: 30s) so the runtime doesn't SIGKILL pgao mid-drain.
+  shutdown_timeout: 25s
   # Optional static API key. When set, /api/v1/* requires either
   # Authorization: Bearer <key> or X-API-Key: <key>. /health, /ready,
   # and /metrics are always open. Leave empty for dev.

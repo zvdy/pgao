@@ -30,7 +30,12 @@ type ServerConfig struct {
 	MaxBodyBytes   int64         `yaml:"max_body_bytes"`
 	RateLimitRPS   float64       `yaml:"rate_limit_rps"`
 	RateLimitBurst int           `yaml:"rate_limit_burst"`
-	Auth           AuthConfig    `yaml:"auth"`
+	// ShutdownTimeout caps the total grace period for SIGTERM handling:
+	// HTTP drain (server.Shutdown) + background goroutine drain
+	// (supervisor + collectors) share this budget. Default 30 s aligns
+	// with the typical Kubernetes terminationGracePeriodSeconds.
+	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	Auth            AuthConfig    `yaml:"auth"`
 	// UIEnabled controls whether the embedded SPA is served at /. Default
 	// true. Set false when a separate Ingress fronts both the API and a
 	// CDN-hosted UI.
@@ -181,15 +186,16 @@ func expandEnvVars(input string) string {
 func defaultConfig() *Config {
 	return &Config{
 		Server: ServerConfig{
-			Host:           "0.0.0.0",
-			Port:           8080,
-			ReadTimeout:    15 * time.Second,
-			WriteTimeout:   15 * time.Second,
-			IdleTimeout:    60 * time.Second,
-			RequestTimeout: 5 * time.Second,
-			MaxBodyBytes:   1 << 20, // 1 MiB
-			RateLimitRPS:   50,
-			RateLimitBurst: 100,
+			Host:            "0.0.0.0",
+			Port:            8080,
+			ReadTimeout:     15 * time.Second,
+			WriteTimeout:    15 * time.Second,
+			IdleTimeout:     60 * time.Second,
+			RequestTimeout:  5 * time.Second,
+			MaxBodyBytes:    1 << 20, // 1 MiB
+			RateLimitRPS:    50,
+			RateLimitBurst:  100,
+			ShutdownTimeout: 30 * time.Second,
 		},
 		Clusters: []ClusterConfig{},
 		Logging: LoggingConfig{

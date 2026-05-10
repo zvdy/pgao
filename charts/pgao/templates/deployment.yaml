@@ -21,6 +21,9 @@ spec:
     spec:
       serviceAccountName: {{ include "pgao.serviceAccountName" . }}
       automountServiceAccountToken: false
+      {{- with .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets: {{- toYaml . | nindent 8 }}
       {{- end }}
