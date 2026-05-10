@@ -1,0 +1,34 @@
+{{- if .Values.leaderElection.enabled }}
+{{/*
+Leader election needs Lease access in the release namespace. Two
+resources: a Role granting the verbs client-go's leaderelection package
+needs, and a RoleBinding tying it to the chart's ServiceAccount.
+
+Scoped to the release namespace; co-tenanted releases never read each
+other's Lease because the Lease name is "pgao-leader" and Role/Binding
+permissions don't escape the namespace.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "pgao.fullname" . }}-leader
+  labels: {{- include "pgao.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "pgao.fullname" . }}-leader
+  labels: {{- include "pgao.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "pgao.fullname" . }}-leader
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "pgao.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

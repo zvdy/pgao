@@ -34,12 +34,28 @@ type ServerConfig struct {
 	// HTTP drain (server.Shutdown) + background goroutine drain
 	// (supervisor + collectors) share this budget. Default 30 s aligns
 	// with the typical Kubernetes terminationGracePeriodSeconds.
-	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
-	Auth            AuthConfig    `yaml:"auth"`
+	ShutdownTimeout time.Duration        `yaml:"shutdown_timeout"`
+	Auth            AuthConfig           `yaml:"auth"`
+	LeaderElection  LeaderElectionConfig `yaml:"leader_election"`
 	// UIEnabled controls whether the embedded SPA is served at /. Default
 	// true. Set false when a separate Ingress fronts both the API and a
 	// CDN-hosted UI.
 	UIEnabled *bool `yaml:"ui_enabled"`
+}
+
+// LeaderElectionConfig controls Kubernetes lease-based HA. When
+// disabled, every replica runs the data plane (collectors + supervisor)
+// — fine for replicaCount=1; doubles Postgres load at replicaCount=2+.
+// When enabled, only the lease-holder runs the data plane and follower
+// replicas serve /ready as 503 so the Service rotates them out.
+type LeaderElectionConfig struct {
+	Enabled       bool          `yaml:"enabled"`
+	Namespace     string        `yaml:"namespace"`      // default: $POD_NAMESPACE
+	Name          string        `yaml:"name"`           // default: "pgao-leader"
+	Identity      string        `yaml:"identity"`       // default: $POD_NAME or hostname
+	LeaseDuration time.Duration `yaml:"lease_duration"` // default 15s
+	RenewDeadline time.Duration `yaml:"renew_deadline"` // default 10s
+	RetryPeriod   time.Duration `yaml:"retry_period"`   // default 2s
 }
 
 // UIEnabledOrDefault returns whether the SPA should be served. A nil

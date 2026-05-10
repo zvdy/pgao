@@ -38,6 +38,7 @@ type Handler struct {
 	sec                 SecurityOptions
 	httpInstr           HTTPInstrumentationProvider
 	ui                  http.Handler
+	leader              LeadershipReporter
 }
 
 // SecurityOptions controls the middleware applied to /api/v1/*. Zero value
@@ -101,6 +102,22 @@ func (h *Handler) WithSecurity(opts SecurityOptions) *Handler {
 // request count + latency. metrics.HTTPInstrumentation satisfies it.
 type HTTPInstrumentationProvider interface {
 	Middleware() mux.MiddlewareFunc
+}
+
+// LeadershipReporter exposes the current leader-election status so the
+// /ready handler can return 503 on follower replicas. leader.Elector
+// satisfies this interface; nil means leader-election is disabled and
+// every replica is implicitly a leader.
+type LeadershipReporter interface {
+	IsLeader() bool
+}
+
+// WithLeadership wires the leader-election status reporter. When set,
+// /ready returns 503 on followers so the kubernetes Service rotates
+// them out of endpoint selection.
+func (h *Handler) WithLeadership(r LeadershipReporter) *Handler {
+	h.leader = r
+	return h
 }
 
 // WithHTTPInstrumentation wires per-request metrics. Must be called before
@@ -199,6 +216,17 @@ func (h *Handler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 // responds to a ping. Per-cluster status is included so operators can see
 // which clusters are down without tailing logs.
 func (h *Handler) ReadinessCheck(w http.ResponseWriter, r *http.Request) {
+	// Followers in HA mode return 503 so the kubernetes Service rotates
+	// them out — only the leader serves API traffic. Without leader
+	// election h.leader is nil and every replica answers normally.
+	if h.leader != nil && !h.leader.IsLeader() {
+		h.respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+			"status": "not_ready",
+			"reason": "follower (leader-election holder is elsewhere)",
+		})
+		return
+	}
+
 	clusters := h.pinger.GetAllClusters()
 	if len(clusters) == 0 {
 		h.respondJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
