@@ -73,6 +73,26 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
+  dep-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Flags newly-introduced dependency vulnerabilities + license issues on
+      # PRs. Complements govulncheck (which scans the whole module graph
+      # on every run) by catching them at the diff level.
+      - name: Run dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
   sast-gosec:
     name: SAST (gosec, SARIF)
     runs-on: ubuntu-latest
@@ -186,6 +206,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+        working-directory: web
+
+      - name: Vitest
+        run: npm run test
         working-directory: web
 
       - name: Type-check + build
