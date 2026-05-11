@@ -20,7 +20,9 @@ spec:
         {{- end }}
     spec:
       serviceAccountName: {{ include "pgao.serviceAccountName" . }}
-      automountServiceAccountToken: false
+      # client-go needs the projected service-account token to call
+      # the coordination.k8s.io API for leader-election leases.
+      automountServiceAccountToken: {{ .Values.leaderElection.enabled }}
       {{- with .Values.terminationGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ . }}
       {{- end }}
@@ -47,6 +49,14 @@ spec:
           env:
             - name: CONFIG_PATH
               value: /etc/pgao/config.yaml
+            {{- if .Values.leaderElection.enabled }}
+            # Downward API: pgao reads POD_NAME / POD_NAMESPACE for the
+            # leader-election Lease identity + namespace.
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            {{- end }}
             {{- if .Values.auth.enabled }}
             - name: PGAO_API_KEY
               valueFrom:

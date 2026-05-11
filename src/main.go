@@ -19,9 +19,121 @@ import (
 	"github.com/zvdy/pgao/src/collector"
 	"github.com/zvdy/pgao/src/config"
 	"github.com/zvdy/pgao/src/db"
+	"github.com/zvdy/pgao/src/leader"
 	pgaometrics "github.com/zvdy/pgao/src/metrics"
 	webui "github.com/zvdy/pgao/web"
 )
+
+// startElectionLoop spawns the leader-election goroutine. While this
+// replica holds the lease, it kicks off the data-plane goroutines
+// (supervisor + collectors) under a child context that's cancelled on
+// demotion. When the parent ctx is cancelled (process shutdown),
+// every goroutine is drained via bgWG by the caller.
+func startElectionLoop(
+	ctx context.Context,
+	bgWG *sync.WaitGroup,
+	log *logrus.Logger,
+	elector leader.Elector,
+	pool *db.ConnectionPool,
+	mc *collector.MetricsCollector,
+	cc *collector.ClusterCollector,
+) {
+	runBg := func(name string, fn func(context.Context)) {
+		bgWG.Add(1)
+		go func() {
+			defer bgWG.Done()
+			fn(ctx)
+			log.WithField("goroutine", name).Debug("background goroutine returned")
+		}()
+	}
+
+	var (
+		dpMu     sync.Mutex
+		dpCancel context.CancelFunc
+	)
+	onLeader := func(parent context.Context) {
+		dpMu.Lock()
+		if dpCancel != nil {
+			dpMu.Unlock()
+			return
+		}
+		dpCtx, dpc := context.WithCancel(parent)
+		dpCancel = dpc
+		dpMu.Unlock()
+
+		log.Info("became leader; starting data plane")
+		runBg("supervisor", pool.Supervise)
+		runBg("metrics-collector", mc.Start)
+		runBg("cluster-collector", cc.Start)
+		<-dpCtx.Done()
+	}
+	onFollower := func(_ context.Context) {
+		dpMu.Lock()
+		defer dpMu.Unlock()
+		if dpCancel != nil {
+			log.Warn("lost leadership; stopping data plane")
+			dpCancel()
+			dpCancel = nil
+		}
+	}
+
+	bgWG.Add(1)
+	go func() {
+		defer bgWG.Done()
+		if err := elector.Run(ctx, leader.Callbacks{
+			OnLeader:   onLeader,
+			OnFollower: onFollower,
+		}); err != nil {
+			log.WithError(err).Error("leader elector exited with error")
+		}
+	}()
+}
+
+// buildElector resolves the leader-election Elector based on config.
+// Disabled → AlwaysLeader (every replica runs the data plane, fine for
+// replicaCount=1). Enabled → KubernetesElector backed by a coordination.
+// k8s.io Lease.
+func buildElector(cfg config.LeaderElectionConfig, log *logrus.Logger) (leader.Elector, error) {
+	if !cfg.Enabled {
+		log.Info("Leader election disabled; this replica owns the data plane")
+		return leader.NewAlwaysLeader(), nil
+	}
+
+	identity := cfg.Identity
+	if identity == "" {
+		identity = os.Getenv("POD_NAME")
+	}
+	if identity == "" {
+		host, err := os.Hostname()
+		if err != nil {
+			return nil, fmt.Errorf("leader election: resolve identity: %w", err)
+		}
+		identity = host
+	}
+	namespace := cfg.Namespace
+	if namespace == "" {
+		namespace = os.Getenv("POD_NAMESPACE")
+	}
+	name := cfg.Name
+	if name == "" {
+		name = "pgao-leader"
+	}
+
+	log.WithFields(logrus.Fields{
+		"identity":  identity,
+		"namespace": namespace,
+		"lease":     name,
+	}).Info("Leader election enabled")
+
+	return leader.NewKubernetesElector(leader.Config{
+		Identity:      identity,
+		Namespace:     namespace,
+		Name:          name,
+		LeaseDuration: cfg.LeaseDuration,
+		RenewDeadline: cfg.RenewDeadline,
+		RetryPeriod:   cfg.RetryPeriod,
+	})
+}
 
 func main() {
 	// Initialize logger
@@ -118,26 +230,21 @@ func main() {
 
 	log.Info("Initialized collectors")
 
-	// Start collectors + connection supervisor in the background. Each is
-	// added to bgWG so SIGTERM can wait for them to finish their current
-	// iteration before pool.Close runs and slams in-flight queries.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var bgWG sync.WaitGroup
-	runBg := func(name string, fn func(context.Context)) {
-		bgWG.Add(1)
-		go func() {
-			defer bgWG.Done()
-			fn(ctx)
-			log.WithField("goroutine", name).Debug("background goroutine returned")
-		}()
+	// Resolve the leader-election Elector. With leader_election disabled
+	// every replica runs the data plane (AlwaysLeader); enabled, only
+	// the Kubernetes Lease-holder does.
+	elector, err := buildElector(cfg.Server.LeaderElection, log)
+	if err != nil {
+		log.WithError(err).Fatal("failed to initialize leader election")
 	}
-	runBg("supervisor", pool.Supervise)
-	runBg("metrics-collector", metricsCollector.Start)
-	runBg("cluster-collector", clusterCollector.Start)
 
-	log.Info("Started background collectors + supervisor")
+	// bgWG tracks every long-lived goroutine so SIGTERM can drain them
+	// before pool.Close runs.
+	var bgWG sync.WaitGroup
+	startElectionLoop(ctx, &bgWG, log, elector, pool, metricsCollector, clusterCollector)
 
 	if cfg.Metrics.EnablePrometheus {
 		promReg.MustRegister(pgaometrics.NewExporter(metricsCollector).WithStateSource(pool))
@@ -154,6 +261,7 @@ func main() {
 		log,
 	).WithPromRegistry(promReg).
 		WithHTTPInstrumentation(httpInstr).
+		WithLeadership(elector).
 		WithSecurity(api.SecurityOptions{
 			APIKey:         cfg.Server.Auth.APIKey,
 			RequestTimeout: cfg.Server.RequestTimeout,

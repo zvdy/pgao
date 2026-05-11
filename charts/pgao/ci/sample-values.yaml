@@ -46,3 +46,8 @@ autoscaling:
   enabled: true
   minReplicas: 2
   maxReplicas: 5
+
+# Exercise the leader-election templates in CI: Role + RoleBinding +
+# automountServiceAccountToken=true + downward API env + config block.
+leaderElection:
+  enabled: true

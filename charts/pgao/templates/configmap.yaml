@@ -24,6 +24,18 @@ data:
       {{- with .Values.config.server.shutdown_timeout }}
       shutdown_timeout: {{ . | quote }}
       {{- end }}
+      {{- if .Values.leaderElection.enabled }}
+      leader_election:
+        enabled: true
+        # Identity / namespace come from POD_NAME / POD_NAMESPACE via the
+        # downward API; the Go config layer expands ${VAR} on load.
+        identity: "${POD_NAME}"
+        namespace: "${POD_NAMESPACE}"
+        name: {{ default (printf "%s-leader" (include "pgao.fullname" .)) .Values.leaderElection.name | quote }}
+        lease_duration: {{ .Values.leaderElection.leaseDuration | quote }}
+        renew_deadline: {{ .Values.leaderElection.renewDeadline | quote }}
+        retry_period: {{ .Values.leaderElection.retryPeriod | quote }}
+      {{- end }}
       {{- if .Values.auth.enabled }}
       auth:
         # The actual key is loaded from PGAO_API_KEY (set in the

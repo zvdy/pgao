@@ -18,6 +18,20 @@ server:
   # drain. Should be <= the orchestrator's terminationGracePeriodSeconds
   # (k8s default: 30s) so the runtime doesn't SIGKILL pgao mid-drain.
   shutdown_timeout: 25s
+  # Leader election. With replicaCount > 1, only the lease-holder runs
+  # the data plane (supervisor + collectors); followers stay alive but
+  # /ready returns 503 so the Service rotates them out. Disabled by
+  # default — fine for replicaCount=1, doubles Postgres load otherwise.
+  leader_election:
+    enabled: false
+    # POD_NAME / POD_NAMESPACE are typically wired from the downward API
+    # in the Helm chart; identity must be unique per replica.
+    identity: "${POD_NAME}"
+    namespace: "${POD_NAMESPACE}"
+    name: "pgao-leader"
+    lease_duration: 15s
+    renew_deadline: 10s
+    retry_period: 2s
   # Optional static API key. When set, /api/v1/* requires either
   # Authorization: Bearer <key> or X-API-Key: <key>. /health, /ready,
   # and /metrics are always open. Leave empty for dev.

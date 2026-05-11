@@ -215,6 +215,63 @@ Secret contents, restart the Deployment:
 kubectl -n pgao rollout restart deployment/pgao
 ```
 
+## Running pgao with replicaCount > 1 (HA mode)
+
+The default install runs every replica's data plane in parallel — fine
+at `replicaCount: 1` but doubles Postgres connection + query load when
+you scale out. Enable leader election so only the lease-holder runs
+collectors:
+
+```yaml
+# values-prod.yaml
+replicaCount: 2
+leaderElection:
+  enabled: true
+```
+
+`helm upgrade` installs the Role + RoleBinding granting the chart's
+ServiceAccount CRUD on `coordination.k8s.io/Lease` in the release
+namespace, turns on `automountServiceAccountToken`, and wires
+`POD_NAME` / `POD_NAMESPACE` via the downward API.
+
+Verify the lease is held by exactly one pod:
+
+```sh
+kubectl -n pgao get lease
+# NAME           HOLDER           AGE
+# pgao-leader    pgao-7c8f9-xxxx  47s
+
+kubectl -n pgao get pods -L app.kubernetes.io/instance
+# NAME             READY   STATUS    ...
+# pgao-7c8f9-xxxx  1/1     Running         <- leader: /ready=200
+# pgao-7c8f9-yyyy  0/1     Running         <- follower: /ready=503
+```
+
+The follower's `0/1` Ready state is **expected and correct** — it means
+the kubernetes Service has rotated it out of endpoint selection so all
+client traffic flows to the leader. When the leader's lease expires
+(default 15 s), one of the followers acquires it and flips to `1/1`
+within ~2 s (the `retry_period`).
+
+**Verify failover works:**
+
+```sh
+LEADER=$(kubectl -n pgao get lease pgao-leader -o jsonpath='{.spec.holderIdentity}')
+kubectl -n pgao delete pod "$LEADER"
+# Watch a different pod's /ready flip to 200 within ~15 s.
+```
+
+**Tuning:**
+
+| Knob | Default | When to raise | When to lower |
+| --- | --- | --- | --- |
+| `leaseDuration` | 15s | Frequent log spam from contested elections | Faster failover (be careful: < 2× `retryPeriod`) |
+| `renewDeadline` | 10s | Long-running collection rounds (raise `metrics.query_timeout` first) | Aggressive failover |
+| `retryPeriod` | 2s | Reduce kube-apiserver load | Faster follower takeover |
+
+**Constraint:** `renewDeadline < leaseDuration`. The Go config layer
+rejects this at startup so a misconfigured deployment fails fast.
+
 ## CI release didn't push to GHCR
 
 The release workflow only runs on tags matching `v*.*.*`. Push the tag

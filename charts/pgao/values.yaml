@@ -102,6 +102,24 @@ networkPolicy:
         - port: 5432
           protocol: TCP
 
+# Leader election. With replicaCount > 1, every replica scrapes every
+# cluster — duplicating the load on Postgres. Enable this to coordinate
+# via a coordination.k8s.io/Lease so only the leader runs collectors;
+# followers stay alive (fast failover) but their /ready returns 503 so
+# the Service rotates them out.
+#
+# Enabling this also installs the Role + RoleBinding granting Lease CRUD,
+# and turns on automountServiceAccountToken on the Pod so client-go can
+# read the in-cluster credentials.
+leaderElection:
+  enabled: false
+  # Lease name (release-scoped by the chart fullname helper). Override
+  # only if you need to align with an existing operator's convention.
+  name: ""
+  leaseDuration: 15s
+  renewDeadline: 10s
+  retryPeriod: 2s
+
 # PodDisruptionBudget: keep at least 1 replica available during voluntary
 # disruptions (node drains, cluster autoscaler).
 podDisruptionBudget:
