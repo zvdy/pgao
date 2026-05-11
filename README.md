@@ -13,6 +13,8 @@ Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_g
 - [Operator runbook](docs/runbook.md) — symptom-first guide for production incidents
 - [Helm chart](charts/pgao/values.yaml) — production install with NetworkPolicy, PDB, HPA, ServiceMonitor
 - [Web UI](web/README.md) — embedded React/TS dashboard served at `/`
+- [Changelog](CHANGELOG.md) — what changed in each release
+- [Security policy](SECURITY.md) — how to report vulnerabilities
 
 ## Quick Start
 

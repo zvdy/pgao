@@ -73,6 +73,68 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
+  sast-gosec:
+    name: SAST (gosec, SARIF)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          # -no-fail: report findings without failing the job — the
+          # SARIF upload feeds the GitHub Security tab where branch
+          # protection / code-scanning rules can gate merges. Real
+          # blocking happens in the lint-go job, which also runs gosec
+          # via golangci-lint v2.
+          args: '-no-fail -fmt sarif -out gosec.sarif ./...'
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+  codeql-go:
+    name: CodeQL (Go)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-and-quality
+
+      # CodeQL needs a build to analyze; reuse our normal Go build,
+      # skipping the web bundle since the JS is analyzed separately.
+      - name: Build
+        run: make build-go
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql-go
+
   test-go:
     name: Test Go Code
     runs-on: ubuntu-latest
