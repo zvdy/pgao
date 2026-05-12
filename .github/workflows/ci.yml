@@ -73,6 +73,34 @@ jobs:
       - name: Run govulncheck
         run: govulncheck ./...
 
+  dep-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Flags newly-introduced dependency vulnerabilities + license issues on
+      # PRs. Complements govulncheck (which scans the whole module graph
+      # on every run) by catching them at the diff level.
+      #
+      # Step-level continue-on-error keeps the JOB green while the step
+      # may fail — needed because the action errors with "not supported
+      # on this repository" until the repo's Dependency Graph feature is
+      # enabled (Settings → Security → Dependency graph). Once enabled,
+      # real CVE findings still appear in the job's logs / SARIF; flip
+      # this back to default to block PRs on them.
+      - name: Run dependency review
+        continue-on-error: true
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
   sast-gosec:
     name: SAST (gosec, SARIF)
     runs-on: ubuntu-latest
@@ -186,6 +214,10 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
+        working-directory: web
+
+      - name: Vitest
+        run: npm run test
         working-directory: web
 
       - name: Type-check + build

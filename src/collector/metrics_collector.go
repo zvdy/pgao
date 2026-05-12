@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sirupsen/logrus"
@@ -14,6 +15,13 @@ import (
 	"github.com/zvdy/pgao/src/models"
 	"golang.org/x/sync/errgroup"
 )
+
+// queryRunner is the slice of pgxpool.Pool the public-API collectors
+// (CollectQueryMetrics, CollectTableMetrics) need. Pulled out so tests
+// can pass a pgxmock instance instead of a live pool.
+type queryRunner interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
 
 // ErrPgStatStatementsMissing is returned by CollectQueryMetrics when the
 // pg_stat_statements extension is not installed on the target cluster.
@@ -366,12 +374,21 @@ var allowedSlowQueryOrderBy = map[string]string{
 // CollectQueryMetrics returns the top queries by the chosen ordering from
 // pg_stat_statements. Returns ErrPgStatStatementsMissing when the extension
 // is not installed so callers can surface a precondition failure.
+// CollectQueryMetrics returns the top queries by the chosen ordering from
+// pg_stat_statements. Returns ErrPgStatStatementsMissing when the extension
+// is not installed so callers can surface a precondition failure.
 func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID string, opts SlowQueryOptions) ([]*models.QueryMetrics, error) {
 	pool, err := mc.pool.GetPool(clusterID)
 	if err != nil {
 		return nil, err
 	}
+	return collectQueryMetrics(ctx, pool, clusterID, opts)
+}
 
+// collectQueryMetrics is the pool-agnostic core of CollectQueryMetrics.
+// Pulled out so tests can pass a pgxmock instance without standing up a
+// real pgxpool.Pool.
+func collectQueryMetrics(ctx context.Context, runner queryRunner, clusterID string, opts SlowQueryOptions) ([]*models.QueryMetrics, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
@@ -402,7 +419,7 @@ func (mc *MetricsCollector) CollectQueryMetrics(ctx context.Context, clusterID s
 		LIMIT $1
 	`, orderCol)
 
-	rows, err := pool.Query(ctx, query, limit)
+	rows, err := runner.Query(ctx, query, limit)
 	if err != nil {
 		if isUndefinedTable(err) {
 			return nil, ErrPgStatStatementsMissing
@@ -454,7 +471,12 @@ func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID s
 	if err != nil {
 		return nil, err
 	}
+	return collectTableMetrics(ctx, pool, clusterID, opts)
+}
 
+// collectTableMetrics is the pool-agnostic core of CollectTableMetrics so
+// tests can pass a pgxmock without standing up a real pgxpool.Pool.
+func collectTableMetrics(ctx context.Context, runner queryRunner, clusterID string, opts TableMetricsOptions) ([]*models.TableMetrics, error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 100
@@ -488,7 +510,7 @@ func (mc *MetricsCollector) CollectTableMetrics(ctx context.Context, clusterID s
 		LIMIT $1
 	`
 
-	rows, err := pool.Query(ctx, query, limit)
+	rows, err := runner.Query(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query pg_stat_user_tables: %w", err)
 	}

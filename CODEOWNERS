@@ -1,0 +1,4 @@
+# Catch-all owner. GitHub uses this file to auto-request reviewers and
+# to gate merges when branch-protection rules require an owner approval.
+# Override per-path below if/when sub-area maintainers join the project.
+* @zvdy

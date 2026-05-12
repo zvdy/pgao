@@ -183,7 +183,10 @@ func (cc *ClusterCollector) collectSettings(ctx context.Context, clusterID strin
 	if err != nil {
 		return nil, err
 	}
+	return collectSettings(ctx, pool)
+}
 
+func collectSettings(ctx context.Context, runner queryRunner) (map[string]string, error) {
 	query := `
 		SELECT name, setting, COALESCE(unit, '')
 		FROM pg_settings
@@ -201,7 +204,7 @@ func (cc *ClusterCollector) collectSettings(ctx context.Context, clusterID strin
 		)
 	`
 
-	rows, err := pool.Query(ctx, query)
+	rows, err := runner.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query settings: %w", err)
 	}
@@ -231,7 +234,10 @@ func (cc *ClusterCollector) collectDatabases(ctx context.Context, clusterID stri
 	if err != nil {
 		return nil, err
 	}
+	return collectDatabases(ctx, pool)
+}
 
+func collectDatabases(ctx context.Context, runner queryRunner) ([]string, error) {
 	query := `
 		SELECT datname
 		FROM pg_database
@@ -239,7 +245,7 @@ func (cc *ClusterCollector) collectDatabases(ctx context.Context, clusterID stri
 		ORDER BY datname
 	`
 
-	rows, err := pool.Query(ctx, query)
+	rows, err := runner.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query databases: %w", err)
 	}
@@ -326,8 +332,11 @@ func (cc *ClusterCollector) collectExtensions(ctx context.Context, clusterID str
 	if err != nil {
 		return nil, err
 	}
+	return collectExtensions(ctx, pool)
+}
 
-	rows, err := pool.Query(ctx, "SELECT extname FROM pg_extension ORDER BY extname")
+func collectExtensions(ctx context.Context, runner queryRunner) ([]string, error) {
+	rows, err := runner.Query(ctx, "SELECT extname FROM pg_extension ORDER BY extname")
 	if err != nil {
 		return nil, fmt.Errorf("query extensions: %w", err)
 	}

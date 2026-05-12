@@ -32,9 +32,16 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: ${{ runner.os }}-go-
 
+      # Use build-go (not build) so the integration job stays Go-only.
+      # make build chains in `make ui` which needs Node + npm install,
+      # and the e2e suite hits the API surface — it doesn't care whether
+      # the embedded SPA is the placeholder or the real bundle.
       - name: Build pgao binary
-        run: make build
+        run: make build-go
 
+      # docker-build's web-builder stage produces the real UI bundle and
+      # bakes it into the image; that's what the integration container
+      # actually runs.
       - name: Build Docker image
         run: make docker-build
 
