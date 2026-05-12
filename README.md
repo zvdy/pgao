@@ -6,6 +6,18 @@
 
 Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_go](https://github.com/pganalyze/pg_query_go), multi-cluster support, REST API.
 
+## Screenshots
+
+| | |
+| :---: | :---: |
+| Fleet overview | Cluster metrics |
+| [![Overview](docs/screenshots/01-overview.png)](docs/screenshots/01-overview.png) | [![Metrics](docs/screenshots/02-cluster-metrics.png)](docs/screenshots/02-cluster-metrics.png) |
+| Slow queries (pg_stat_statements) | Table activity (pg_stat_user_tables) |
+| [![Queries](docs/screenshots/03-cluster-queries.png)](docs/screenshots/03-cluster-queries.png) | [![Tables](docs/screenshots/04-cluster-tables.png)](docs/screenshots/04-cluster-tables.png) |
+
+Captured against a local Postgres 16 loaded with `pgbench -c 10 -T 20`.
+Reproduce with `scripts/screenshots/capture.sh` after a change.
+
 ## Documentation
 
 - [API contract](api/openapi.yaml) — OpenAPI 3.1 spec for every HTTP endpoint
