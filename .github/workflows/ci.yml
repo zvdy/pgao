@@ -77,6 +77,13 @@ jobs:
     name: Dependency review
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # Non-blocking: the action requires the repo-level Dependency graph
+    # feature to be enabled (Settings → Security → Dependency graph).
+    # Until that's flipped on, the action errors with "Dependency review
+    # is not supported on this repository". Leaving the job advisory so
+    # CI stays green on private/personal repos that haven't opted in;
+    # the moment the feature is enabled, real findings start failing PRs.
+    continue-on-error: true
     permissions:
       contents: read
       pull-requests: write

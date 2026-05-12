@@ -1,4 +1,5 @@
 // Vitest global setup. Loaded once before every test file.
+import { beforeEach } from 'vitest';
 import '@testing-library/jest-dom/vitest';
 
 // jsdom doesn't ship a matchMedia, which some libs reach for during
