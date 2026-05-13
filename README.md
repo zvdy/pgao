@@ -8,6 +8,8 @@ Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_g
 
 ## Screenshots
 
+### Web UI (`/`)
+
 | | |
 | :---: | :---: |
 | Fleet overview | Cluster metrics |
@@ -15,8 +17,21 @@ Monitor and analyze PostgreSQL clusters at scale. Query analysis via [pg_query_g
 | Slow queries (pg_stat_statements) | Table activity (pg_stat_user_tables) |
 | [![Queries](docs/screenshots/03-cluster-queries.png)](docs/screenshots/03-cluster-queries.png) | [![Tables](docs/screenshots/04-cluster-tables.png)](docs/screenshots/04-cluster-tables.png) |
 
-Captured against a local Postgres 16 loaded with `pgbench -c 10 -T 20`.
-Reproduce with `scripts/screenshots/capture.sh` after a change.
+Reproduce with `scripts/screenshots/capture.sh`.
+
+### Observability stack (Grafana + Prometheus)
+
+| | |
+| :---: | :---: |
+| Grafana — `pgao Overview` dashboard | Grafana — full page (every panel) |
+| [![Grafana](docs/screenshots/05-grafana-overview.png)](docs/screenshots/05-grafana-overview.png) | [![Grafana full](docs/screenshots/06-grafana-full.png)](docs/screenshots/06-grafana-full.png) |
+| Prometheus — `pgao_transactions_per_sec` graph | Prometheus — scrape targets |
+| [![Prometheus graph](docs/screenshots/07-prometheus-graph.png)](docs/screenshots/07-prometheus-graph.png) | [![Prometheus targets](docs/screenshots/08-prometheus-targets.png)](docs/screenshots/08-prometheus-targets.png) |
+
+All eight captured against a local Postgres 16 under sustained
+`pgbench -c 10 -j 2 -T 60` load (≈ 1 000 TPS). The Grafana dashboard
+JSON ships at [`docs/grafana/pgao-overview.json`](docs/grafana/pgao-overview.json).
+Reproduce the observability stack with `scripts/screenshots/capture-observability.sh`.
 
 ## Documentation
 
